@@ -1488,3 +1488,466 @@ python tests/test_auth.py
 
 
 
+
+
+
+test_util.py
+
+"""
+Test script for Utils module
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.utils import (
+    get_nested_value,
+    is_valid_url,
+    deep_equal,
+    is_numeric_string,
+    safe_float_compare,
+    format_duration
+)
+from src.logger import logger
+
+
+def test_get_nested_value():
+    """Test nested value extraction"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 1: get_nested_value()")
+    logger.info("="*60)
+    
+    # Test data - simulating API response structure
+    test_data = {
+        "actualData": {
+            "paymentInfo": {
+                "paymentId": "PAY001",
+                "amount": 10.50,
+                "status": "completed"
+            },
+            "userData": {
+                "userName": "John Doe",
+                "userEmail": "john@example.com",
+                "address": {
+                    "city": "New York",
+                    "zip": "10001"
+                }
+            },
+            "orderItems": [
+                {"itemId": 1, "itemName": "Item1", "itemPrice": 10.50},
+                {"itemId": 2, "itemName": "Item2", "itemPrice": 20.00}
+            ]
+        }
+    }
+    
+    # Test cases
+    test_cases = [
+        {
+            "path": "actualData.paymentInfo.paymentId",
+            "expected": "PAY001",
+            "description": "Simple nested path"
+        },
+        {
+            "path": "actualData.userData.address.city",
+            "expected": "New York",
+            "description": "Deeply nested path (3 levels)"
+        },
+        {
+            "path": "actualData.paymentInfo.amount",
+            "expected": 10.50,
+            "description": "Nested numeric value"
+        },
+        {
+            "path": "actualData.orderItems",
+            "expected": test_data["actualData"]["orderItems"],
+            "description": "Array value"
+        },
+        {
+            "path": "nonexistent.path.value",
+            "expected": None,
+            "description": "Non-existent path (should return None)"
+        },
+        {
+            "path": "actualData.paymentInfo.nonexistent",
+            "expected": None,
+            "description": "Partial path exists (should return None)"
+        },
+        {
+            "path": "",
+            "expected": None,
+            "description": "Empty path"
+        }
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = get_nested_value(test_data, test["path"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            logger.debug(f"    Path: {test['path']}")
+            logger.debug(f"    Result: {result}")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    Path: {test['path']}")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_is_valid_url():
+    """Test URL validation"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 2: is_valid_url()")
+    logger.info("="*60)
+    
+    test_cases = [
+        {
+            "url": "https://api.example.com/endpoint",
+            "expected": True,
+            "description": "Valid HTTPS URL"
+        },
+        {
+            "url": "http://localhost:8080/api",
+            "expected": True,
+            "description": "Valid HTTP URL with port"
+        },
+        {
+            "url": "mongodb://user:pass@host:27017/db",
+            "expected": True,
+            "description": "Valid MongoDB connection string"
+        },
+        {
+            "url": "not-a-url",
+            "expected": False,
+            "description": "Invalid URL (no scheme)"
+        },
+        {
+            "url": "https://",
+            "expected": False,
+            "description": "Invalid URL (no host)"
+        },
+        {
+            "url": "",
+            "expected": False,
+            "description": "Empty string"
+        },
+        {
+            "url": "ftp://files.example.com/data",
+            "expected": True,
+            "description": "Valid FTP URL"
+        }
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = is_valid_url(test["url"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            logger.debug(f"    URL: {test['url']}")
+            logger.debug(f"    Valid: {result}")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    URL: {test['url']}")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_deep_equal():
+    """Test deep equality comparison"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 3: deep_equal()")
+    logger.info("="*60)
+    
+    test_cases = [
+        {
+            "obj1": {"a": 1, "b": 2},
+            "obj2": {"a": 1, "b": 2},
+            "expected": True,
+            "description": "Identical simple objects"
+        },
+        {
+            "obj1": {"a": 1, "b": 2},
+            "obj2": {"b": 2, "a": 1},
+            "expected": True,
+            "description": "Same content, different key order"
+        },
+        {
+            "obj1": {"a": 1, "b": {"c": 3}},
+            "obj2": {"a": 1, "b": {"c": 3}},
+            "expected": True,
+            "description": "Nested objects identical"
+        },
+        {
+            "obj1": [1, 2, 3],
+            "obj2": [1, 2, 3],
+            "expected": True,
+            "description": "Identical arrays"
+        },
+        {
+            "obj1": {"a": 1, "b": 2},
+            "obj2": {"a": 1, "b": 3},
+            "expected": False,
+            "description": "Different values"
+        },
+        {
+            "obj1": [1, 2, 3],
+            "obj2": [1, 3, 2],
+            "expected": False,
+            "description": "Arrays with different order"
+        },
+        {
+            "obj1": {"a": 1},
+            "obj2": {"a": 1, "b": 2},
+            "expected": False,
+            "description": "Different number of keys"
+        },
+        {
+            "obj1": None,
+            "obj2": None,
+            "expected": True,
+            "description": "Both None"
+        },
+        {
+            "obj1": [],
+            "obj2": [],
+            "expected": True,
+            "description": "Empty arrays"
+        }
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = deep_equal(test["obj1"], test["obj2"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    Obj1: {test['obj1']}")
+            logger.error(f"    Obj2: {test['obj2']}")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_is_numeric_string():
+    """Test numeric string detection"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 4: is_numeric_string()")
+    logger.info("="*60)
+    
+    test_cases = [
+        {"value": "123", "expected": True, "description": "Integer string"},
+        {"value": "123.45", "expected": True, "description": "Decimal string"},
+        {"value": "-123.45", "expected": True, "description": "Negative decimal string"},
+        {"value": "0", "expected": True, "description": "Zero string"},
+        {"value": "0.0", "expected": True, "description": "Zero decimal string"},
+        {"value": "abc", "expected": False, "description": "Non-numeric string"},
+        {"value": "12.34.56", "expected": False, "description": "Invalid decimal format"},
+        {"value": "", "expected": False, "description": "Empty string"},
+        {"value": "12a34", "expected": False, "description": "Mixed alphanumeric"},
+        {"value": 123, "expected": False, "description": "Actual number (not string)"},
+        {"value": None, "expected": False, "description": "None value"},
+        {"value": "1.5E+10", "expected": True, "description": "Scientific notation"},
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = is_numeric_string(test["value"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            logger.debug(f"    Value: {test['value']} (type: {type(test['value']).__name__})")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    Value: {test['value']}")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_safe_float_compare():
+    """Test safe float comparison"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 5: safe_float_compare()")
+    logger.info("="*60)
+    
+    test_cases = [
+        {
+            "val1": 10.5,
+            "val2": 10.5,
+            "expected": True,
+            "description": "Identical floats"
+        },
+        {
+            "val1": "10.50",
+            "val2": "10.5",
+            "expected": True,
+            "description": "String representations of equal floats (Issue #3)"
+        },
+        {
+            "val1": 10.50,
+            "val2": "10.5",
+            "expected": True,
+            "description": "Float vs string (mixed types)"
+        },
+        {
+            "val1": 0.1 + 0.2,
+            "val2": 0.3,
+            "expected": True,
+            "description": "Floating point precision issue (0.1+0.2 vs 0.3)"
+        },
+        {
+            "val1": 10.5,
+            "val2": 10.6,
+            "expected": False,
+            "description": "Different values"
+        },
+        {
+            "val1": "10.50",
+            "val2": "10.51",
+            "expected": False,
+            "description": "Different string numbers"
+        },
+        {
+            "val1": "abc",
+            "val2": "def",
+            "expected": False,
+            "description": "Non-numeric strings"
+        },
+        {
+            "val1": None,
+            "val2": 10.5,
+            "expected": False,
+            "description": "None vs number"
+        },
+        {
+            "val1": 0,
+            "val2": 0.0,
+            "expected": True,
+            "description": "Zero variations"
+        }
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = safe_float_compare(test["val1"], test["val2"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            logger.debug(f"    Val1: {test['val1']} (type: {type(test['val1']).__name__})")
+            logger.debug(f"    Val2: {test['val2']} (type: {type(test['val2']).__name__})")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    Val1: {test['val1']}")
+            logger.error(f"    Val2: {test['val2']}")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def test_format_duration():
+    """Test duration formatting"""
+    logger.info("\n" + "="*60)
+    logger.info("Test 6: format_duration()")
+    logger.info("="*60)
+    
+    test_cases = [
+        {"ms": 500, "expected": "500ms", "description": "Milliseconds"},
+        {"ms": 999, "expected": "999ms", "description": "Just under 1 second"},
+        {"ms": 1000, "expected": "1.0s", "description": "Exactly 1 second"},
+        {"ms": 1500, "expected": "1.5s", "description": "1.5 seconds"},
+        {"ms": 5432, "expected": "5.4s", "description": "5.432 seconds (rounded)"},
+        {"ms": 60000, "expected": "60.0s", "description": "1 minute (as seconds)"},
+        {"ms": 0, "expected": "0ms", "description": "Zero milliseconds"},
+        {"ms": 100.5, "expected": "100ms", "description": "Fractional milliseconds"},
+    ]
+    
+    passed = 0
+    failed = 0
+    
+    for idx, test in enumerate(test_cases, 1):
+        result = format_duration(test["ms"])
+        
+        if result == test["expected"]:
+            logger.success(f"  ✓ Test {idx}: {test['description']}")
+            logger.debug(f"    Input: {test['ms']}ms → Output: {result}")
+            passed += 1
+        else:
+            logger.error(f"  ✗ Test {idx}: {test['description']}")
+            logger.error(f"    Input: {test['ms']}ms")
+            logger.error(f"    Expected: {test['expected']}")
+            logger.error(f"    Got: {result}")
+            failed += 1
+    
+    logger.info(f"\n  Results: {passed} passed, {failed} failed")
+    return failed == 0
+
+
+def run_all_tests():
+    """Run all utility tests"""
+    logger.header("TESTING UTILS MODULE")
+    
+    all_passed = True
+    
+    # Run all test functions
+    all_passed &= test_get_nested_value()
+    all_passed &= test_is_valid_url()
+    all_passed &= test_deep_equal()
+    all_passed &= test_is_numeric_string()
+    all_passed &= test_safe_float_compare()
+    all_passed &= test_format_duration()
+    
+    # Final summary
+    logger.separator('=', 60)
+    logger.header("UTILS MODULE TEST COMPLETE")
+    
+    print("\n" + "="*60)
+    print("FINAL SUMMARY:")
+    print("="*60)
+    if all_passed:
+        logger.success("✓ ALL TESTS PASSED!")
+        print("\nThe utils module is working correctly and ready to use.")
+    else:
+        logger.error("✗ SOME TESTS FAILED")
+        print("\nPlease review the failures above and fix any issues.")
+    print("="*60 + "\n")
+
+
+if __name__ == "__main__":
+    run_all_tests()
