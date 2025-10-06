@@ -788,3 +788,703 @@ If you encounter any issues:
 2. Verify `.env` file exists and has correct values
 3. Check that dependencies are installed: `pip list`
 4. Run tests one by one to isolate issues
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+.env.example (Template for users)
+bash# MongoDB Configuration
+MONGO_CONNECTION_STRING=mongodb://username:password@host:27017/database?authSource=admin
+MONGO_DATABASE=your_database_name
+MONGO_COLLECTION=your_collection_name
+
+# API Configuration
+JAVA21_API_URL=https://your-java21-api.com/endpoint
+JAVA8_API_URL=https://your-java8-api.com/endpoint
+TOKEN_API_URL=https://your-token-api.com/token
+
+# Token API Credentials (if needed)
+TOKEN_API_USERNAME=your_username
+TOKEN_API_PASSWORD=your_password
+.gitignore
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test outputs
+output/
+*.log
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+configs/test-sample.json
+json{
+  "apiName": "getUserPaymentData",
+  "paymentIdMapping": {
+    "mongoField": "payment_id",
+    "jsonAttribute": "paymentId"
+  },
+  "testPaymentIds": [
+    "PAY001",
+    "PAY002",
+    "PAY003"
+  ]
+}
+Note: URLs and MongoDB config will come from .env file for security.
+
+2. MongoDB Client Module
+src/mongo_client.py
+python"""
+MongoDB Client Module
+Handles all MongoDB operations
+"""
+
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
+from typing import Dict, Any, Optional, List
+from .logger import logger
+
+
+class MongoDBClient:
+    """Handles MongoDB connections and queries"""
+    
+    def __init__(self, connection_string: str, database: str, collection: str):
+        """
+        Initialize MongoDB client
+        
+        Args:
+            connection_string: MongoDB connection string
+            database: Database name
+            collection: Collection name
+        """
+        self.connection_string = connection_string
+        self.database_name = database
+        self.collection_name = collection
+        self.client: Optional[MongoClient] = None
+        self.db = None
+        self.collection = None
+    
+    def connect(self) -> bool:
+        """
+        Connect to MongoDB
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            logger.info("Connecting to MongoDB...")
+            self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=5000)
+            
+            # Test connection
+            self.client.admin.command('ping')
+            
+            self.db = self.client[self.database_name]
+            self.collection = self.db[self.collection_name]
+            
+            logger.success(f"Connected to MongoDB - Database: {self.database_name}, Collection: {self.collection_name}")
+            return True
+            
+        except ConnectionFailure as e:
+            logger.error(f"MongoDB connection failed: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to MongoDB: {str(e)}")
+            return False
+    
+    def find_by_payment_id(self, payment_id: str, payment_id_field: str) -> Dict[str, Any]:
+        """
+        Find a record by payment ID
+        
+        Args:
+            payment_id: Payment ID value to search for
+            payment_id_field: MongoDB field name for payment ID
+        
+        Returns:
+            Dict with 'success' (bool), 'data' (record or None), 'error' (str or None)
+        """
+        if not self.collection:
+            return {
+                'success': False,
+                'data': None,
+                'error': 'Not connected to MongoDB'
+            }
+        
+        try:
+            query = {payment_id_field: payment_id}
+            logger.debug(f"Querying MongoDB: {query}")
+            
+            record = self.collection.find_one(query)
+            
+            if record:
+                # Convert ObjectId to string for JSON serialization
+                if '_id' in record:
+                    record['_id'] = str(record['_id'])
+                
+                logger.debug(f"Found record for payment ID: {payment_id}")
+                return {
+                    'success': True,
+                    'data': record,
+                    'error': None
+                }
+            else:
+                logger.warn(f"No record found for payment ID: {payment_id}")
+                return {
+                    'success': True,
+                    'data': None,
+                    'error': f'No record found for payment ID: {payment_id}'
+                }
+                
+        except OperationFailure as e:
+            logger.error(f"MongoDB operation failed: {str(e)}")
+            return {
+                'success': False,
+                'data': None,
+                'error': f'MongoDB operation failed: {str(e)}'
+            }
+        except Exception as e:
+            logger.error(f"Error querying MongoDB: {str(e)}")
+            return {
+                'success': False,
+                'data': None,
+                'error': f'Error querying MongoDB: {str(e)}'
+            }
+    
+    def test_collection_access(self) -> Dict[str, Any]:
+        """
+        Test if collection exists and has data
+        
+        Returns:
+            Dict with collection stats
+        """
+        if not self.collection:
+            return {
+                'success': False,
+                'error': 'Not connected to MongoDB'
+            }
+        
+        try:
+            # Check if collection exists
+            collections = self.db.list_collection_names()
+            
+            if self.collection_name not in collections:
+                return {
+                    'success': False,
+                    'error': f"Collection '{self.collection_name}' not found",
+                    'available_collections': collections
+                }
+            
+            # Get document count
+            count = self.collection.count_documents({})
+            
+            return {
+                'success': True,
+                'collection_name': self.collection_name,
+                'document_count': count
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Error accessing collection: {str(e)}'
+            }
+    
+    def close(self):
+        """Close MongoDB connection"""
+        if self.client:
+            self.client.close()
+            logger.info("MongoDB connection closed")
+tests/test_mongo_client.py
+python"""
+Test script for MongoDB Client module
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.mongo_client import MongoDBClient
+from src.config_loader import config_loader
+from src.logger import logger
+
+
+def test_mongo_client():
+    """Test MongoDB client functionality"""
+    
+    logger.header("TESTING MONGODB CLIENT MODULE")
+    
+    # Load config to get MongoDB details
+    try:
+        test_config = config_loader.load_test_config('configs/test-sample.json')
+    except Exception as e:
+        logger.error(f"Failed to load config: {str(e)}")
+        logger.info("Make sure .env file exists with MongoDB credentials")
+        return
+    
+    # Test 1: Create MongoDB client
+    logger.info("\nTest 1: Initialize MongoDB Client")
+    try:
+        mongo_client = MongoDBClient(
+            connection_string=test_config['mongoConnectionString'],
+            database=test_config['mongoDatabase'],
+            collection=test_config['mongoCollection']
+        )
+        logger.success("MongoDB client initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize: {str(e)}")
+        return
+    
+    # Test 2: Connect to MongoDB
+    logger.info("\nTest 2: Connect to MongoDB")
+    connected = mongo_client.connect()
+    
+    if not connected:
+        logger.error("Connection failed - check your .env file credentials")
+        return
+    
+    # Test 3: Test collection access
+    logger.info("\nTest 3: Test Collection Access")
+    collection_info = mongo_client.test_collection_access()
+    
+    if collection_info['success']:
+        logger.success(f"Collection accessible")
+        logger.info(f"  Collection: {collection_info['collection_name']}")
+        logger.info(f"  Document count: {collection_info['document_count']}")
+    else:
+        logger.error(f"Collection access failed: {collection_info.get('error')}")
+        if 'available_collections' in collection_info:
+            logger.info(f"Available collections: {collection_info['available_collections']}")
+        return
+    
+    # Test 4: Query by payment ID
+    logger.info("\nTest 4: Query by Payment ID")
+    payment_id_field = test_config['paymentIdMapping']['mongoField']
+    test_payment_id = test_config['testPaymentIds'][0]
+    
+    logger.info(f"  Querying for payment ID: {test_payment_id}")
+    logger.info(f"  Using MongoDB field: {payment_id_field}")
+    
+    result = mongo_client.find_by_payment_id(test_payment_id, payment_id_field)
+    
+    if result['success']:
+        if result['data']:
+            logger.success(f"Record found!")
+            logger.info(f"  Record has {len(result['data'])} fields")
+            
+            # Show first few fields
+            logger.info(f"  Sample fields:")
+            count = 0
+            for key, value in result['data'].items():
+                if count < 5:  # Show first 5 fields
+                    value_str = str(value)[:50]  # Truncate long values
+                    logger.info(f"    {key}: {value_str}")
+                    count += 1
+        else:
+            logger.warn(f"No record found for payment ID: {test_payment_id}")
+            logger.info(f"  This payment ID may not exist in the database")
+            logger.info(f"  Update testPaymentIds in test-sample.json with valid IDs")
+    else:
+        logger.error(f"Query failed: {result.get('error')}")
+    
+    # Test 5: Test with all configured payment IDs
+    logger.info("\nTest 5: Test All Configured Payment IDs")
+    for payment_id in test_config['testPaymentIds']:
+        result = mongo_client.find_by_payment_id(payment_id, payment_id_field)
+        
+        if result['success'] and result['data']:
+            logger.success(f"✓ {payment_id}: Found")
+        elif result['success'] and not result['data']:
+            logger.warn(f"⚠ {payment_id}: Not found")
+        else:
+            logger.error(f"✗ {payment_id}: Error - {result.get('error')}")
+    
+    # Close connection
+    logger.info("\nTest 6: Close Connection")
+    mongo_client.close()
+    logger.success("Connection closed")
+    
+    logger.separator()
+    logger.header("MONGODB CLIENT MODULE TEST COMPLETE")
+    
+    print("\n" + "="*60)
+    print("NEXT STEPS:")
+    print("="*60)
+    print("1. If payment IDs were not found, update test-sample.json")
+    print("   with valid payment IDs from your database")
+    print("2. You can query MongoDB directly to find valid payment IDs:")
+    print(f"   db.{test_config['mongoCollection']}.find().limit(5)")
+    print("="*60 + "\n")
+
+
+if __name__ == "__main__":
+    test_mongo_client()
+
+3. Auth Manager Module
+src/auth.py
+python"""
+Auth Module
+Handles bearer token acquisition and management
+"""
+
+import requests
+import time
+from typing import Dict, Any, Optional
+from .logger import logger
+
+
+class TokenManager:
+    """Manages bearer token acquisition and refresh"""
+    
+    def __init__(self, token_api_url: str, username: Optional[str] = None, password: Optional[str] = None):
+        """
+        Initialize token manager
+        
+        Args:
+            token_api_url: URL to get bearer token
+            username: Username for token API (if needed)
+            password: Password for token API (if needed)
+        """
+        self.token_api_url = token_api_url
+        self.username = username
+        self.password = password
+        self.token: Optional[str] = None
+        self.expiry_time: Optional[float] = None
+        self.token_duration: int = 8 * 60 * 60  # 8 hours in seconds (default)
+    
+    def get_token(self) -> Dict[str, Any]:
+        """
+        Acquire bearer token from token API
+        
+        Returns:
+            Dict with 'success' (bool), 'token' (str or None), 'error' (str or None)
+        """
+        try:
+            logger.info(f"Acquiring bearer token from: {self.token_api_url}")
+            
+            # Prepare request based on whether credentials are needed
+            if self.username and self.password:
+                # If credentials provided, use basic auth
+                response = requests.post(
+                    self.token_api_url,
+                    auth=(self.username, self.password),
+                    timeout=30
+                )
+            else:
+                # No credentials - direct POST
+                response = requests.post(
+                    self.token_api_url,
+                    timeout=30
+                )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Token might be in different fields depending on API
+                token = data.get('token') or data.get('access_token') or data.get('bearer_token')
+                
+                if not token:
+                    logger.error("Token not found in response")
+                    logger.debug(f"Response keys: {list(data.keys())}")
+                    return {
+                        'success': False,
+                        'token': None,
+                        'error': 'Token not found in API response'
+                    }
+                
+                # Check for expiry information
+                expires_in = data.get('expires_in') or data.get('expiresIn') or self.token_duration
+                
+                self.token = token
+                self.expiry_time = time.time() + expires_in
+                
+                logger.success("Bearer token acquired successfully")
+                logger.info(f"  Token valid for: {expires_in / 3600:.1f} hours")
+                
+                return {
+                    'success': True,
+                    'token': token,
+                    'expires_in': expires_in,
+                    'error': None
+                }
+            
+            else:
+                logger.error(f"Token API returned status code: {response.status_code}")
+                return {
+                    'success': False,
+                    'token': None,
+                    'error': f'Token API error: {response.status_code} - {response.text}'
+                }
+                
+        except requests.exceptions.Timeout:
+            logger.error("Token API request timed out")
+            return {
+                'success': False,
+                'token': None,
+                'error': 'Token API request timed out'
+            }
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Could not connect to token API: {self.token_api_url}")
+            return {
+                'success': False,
+                'token': None,
+                'error': f'Connection error to token API'
+            }
+        except Exception as e:
+            logger.error(f"Error acquiring token: {str(e)}")
+            return {
+                'success': False,
+                'token': None,
+                'error': f'Error acquiring token: {str(e)}'
+            }
+    
+    def is_token_expired(self) -> bool:
+        """
+        Check if token is expired or about to expire
+        
+        Returns:
+            True if token is expired or will expire in next 5 minutes
+        """
+        if not self.token or not self.expiry_time:
+            return True
+        
+        # Refresh 5 minutes before actual expiry
+        buffer_time = 5 * 60  # 5 minutes
+        return time.time() + buffer_time >= self.expiry_time
+    
+    def get_valid_token(self) -> Dict[str, Any]:
+        """
+        Get a valid token (refresh if needed)
+        
+        Returns:
+            Dict with 'success' (bool), 'token' (str or None), 'error' (str or None)
+        """
+        if self.is_token_expired():
+            logger.info("Token expired or not acquired, getting new token...")
+            return self.get_token()
+        
+        logger.debug("Using existing valid token")
+        return {
+            'success': True,
+            'token': self.token,
+            'error': None
+        }
+tests/test_auth.py
+python"""
+Test script for Auth module
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from src.auth import TokenManager
+from src.config_loader import config_loader
+from src.logger import logger
+
+
+def test_auth():
+    """Test authentication and token management"""
+    
+    logger.header("TESTING AUTH MODULE")
+    
+    # Load config
+    try:
+        test_config = config_loader.load_test_config('configs/test-sample.json')
+    except Exception as e:
+        logger.error(f"Failed to load config: {str(e)}")
+        logger.info("Make sure .env file exists with TOKEN_API_URL")
+        return
+    
+    token_api_url = test_config.get('tokenApiUrl')
+    
+    if not token_api_url:
+        logger.error("TOKEN_API_URL not configured in .env file")
+        return
+    
+    # Get optional credentials from environment
+    username = os.getenv('TOKEN_API_USERNAME')
+    password = os.getenv('TOKEN_API_PASSWORD')
+    
+    # Test 1: Initialize TokenManager
+    logger.info("\nTest 1: Initialize TokenManager")
+    try:
+        token_manager = TokenManager(
+            token_api_url=token_api_url,
+            username=username,
+            password=password
+        )
+        logger.success("TokenManager initialized")
+        
+        if username and password:
+            logger.info("  Using credentials from .env")
+        else:
+            logger.info("  No credentials configured (using direct POST)")
+    except Exception as e:
+        logger.error(f"Failed to initialize: {str(e)}")
+        return
+    
+    # Test 2: Acquire token
+    logger.info("\nTest 2: Acquire Bearer Token")
+    result = token_manager.get_token()
+    
+    if result['success']:
+        logger.success("Token acquired successfully")
+        logger.info(f"  Token (first 20 chars): {result['token'][:20]}...")
+        logger.info(f"  Valid for: {result.get('expires_in', 'unknown')} seconds")
+    else:
+        logger.error(f"Token acquisition failed: {result.get('error')}")
+        logger.info("\nTroubleshooting:")
+        logger.info("1. Check TOKEN_API_URL in .env is correct")
+        logger.info("2. If API requires authentication, add:")
+        logger.info("   TOKEN_API_USERNAME=your_username")
+        logger.info("   TOKEN_API_PASSWORD=your_password")
+        logger.info("3. Check API documentation for correct endpoint and auth method")
+        return
+    
+    # Test 3: Check token expiry
+    logger.info("\nTest 3: Check Token Expiry Status")
+    is_expired = token_manager.is_token_expired()
+    
+    if is_expired:
+        logger.warn("Token is expired (should not happen right after acquisition!)")
+    else:
+        logger.success("Token is valid and not expired")
+    
+    # Test 4: Get valid token (should use cached token)
+    logger.info("\nTest 4: Get Valid Token (Should Use Cache)")
+    result = token_manager.get_valid_token()
+    
+    if result['success']:
+        logger.success("Got valid token from cache")
+        logger.info("  No new API call was made (efficient!)")
+    else:
+        logger.error(f"Failed to get valid token: {result.get('error')}")
+    
+    # Test 5: Simulate token expiry
+    logger.info("\nTest 5: Simulate Token Expiry and Refresh")
+    logger.info("  Manually expiring token...")
+    token_manager.expiry_time = 0  # Force expiry
+    
+    is_expired = token_manager.is_token_expired()
+    if is_expired:
+        logger.success("Token marked as expired")
+    
+    logger.info("  Getting valid token (should refresh)...")
+    result = token_manager.get_valid_token()
+    
+    if result['success']:
+        logger.success("Token refreshed successfully")
+        logger.info("  New token acquired automatically")
+    else:
+        logger.error(f"Token refresh failed: {result.get('error')}")
+    
+    logger.separator()
+    logger.header("AUTH MODULE TEST COMPLETE")
+    
+    print("\n" + "="*60)
+    print("SUMMARY:")
+    print("="*60)
+    if result['success']:
+        print("✓ Auth module is working correctly")
+        print("✓ Token acquisition works")
+        print("✓ Token caching works")
+        print("✓ Token refresh works")
+    else:
+        print("✗ Some tests failed - check configuration")
+    print("="*60 + "\n")
+
+
+if __name__ == "__main__":
+    test_auth()
+
+4. How to Test These Components
+Step 1: Set up your .env file
+Create .env file in project root:
+bash# Copy from .env.example and fill in your actual values
+MONGO_CONNECTION_STRING=mongodb://your_user:your_password@your_host:27017/your_db
+MONGO_DATABASE=your_database
+MONGO_COLLECTION=your_collection
+JAVA21_API_URL=https://your-api.com/endpoint
+TOKEN_API_URL=https://your-token-api.com/token
+
+# Optional: If token API needs auth
+TOKEN_API_USERNAME=your_username
+TOKEN_API_PASSWORD=your_password
+Step 2: Run tests
+bash# Test Config Loader
+python tests/test_config_loader.py
+
+# Test MongoDB Client
+python tests/test_mongo_client.py
+
+# Test Auth
+python tests/test_auth.py
+
+
+
+
