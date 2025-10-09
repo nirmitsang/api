@@ -1,0 +1,245 @@
+Perfect! Let's implement Option 3 (Lazy Loading) properly.
+
+---
+
+## UPDATE: src/config_loader.py
+
+Replace the entire file with this:
+
+```python
+"""
+Configuration Loader Module
+Loads and processes configuration files with environment variable substitution
+"""
+
+import os
+import json
+import re
+from typing import Dict, Any, List, Optional
+from dotenv import load_dotenv
+from .logger import logger
+
+
+class ConfigLoader:
+    """Loads configuration files and handles environment variables"""
+    
+    def __init__(self):
+        """Initialize config loader"""
+        # Load .env file
+        load_dotenv()
+        # Don't use logger here - it may not be initialized yet
+    
+    def replace_env_variables(self, text: str) -> str:
+        """
+        Replace ${ENV_VAR} placeholders with actual environment values
+        
+        Args:
+            text: Text containing ${ENV_VAR} placeholders
+        
+        Returns:
+            Text with placeholders replaced
+        """
+        def replacer(match):
+            env_var = match.group(1)
+            value = os.getenv(env_var)
+            
+            if value is None:
+                if logger:
+                    logger.warn(f"Environment variable {env_var} not found in .env file")
+                return match.group(0)  # Return original if not found
+            
+            if logger:
+                logger.debug(f"Replaced ${{{env_var}}} with value from .env")
+            return value
+        
+        # Replace all ${VAR} patterns
+        return re.sub(r'\$\{([^}]+)\}', replacer, text)
+    
+    def load_test_config(self, filepath: str) -> Dict[str, Any]:
+        """
+        Load test configuration file
+        
+        Args:
+            filepath: Path to test config JSON file
+        
+        Returns:
+            Configuration dictionary with env vars replaced
+        """
+        if logger:
+            logger.debug(f"Loading test config from: {filepath}")
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Replace environment variables
+            content = self.replace_env_variables(content)
+            
+            # Parse JSON
+            config = json.loads(content)
+            
+            if logger:
+                logger.success(f"✓ Test config loaded successfully")
+                logger.debug(f"  API Name: {config.get('apiName')}")
+                logger.debug(f"  MongoDB Collection: {config.get('mongoCollection')}")
+                logger.debug(f"  Test Payment IDs: {len(config.get('testPaymentIds', []))}")
+            
+            return config
+            
+        except FileNotFoundError:
+            if logger:
+                logger.error(f"Config file not found: {filepath}")
+            raise
+        except json.JSONDecodeError as e:
+            if logger:
+                logger.error(f"Invalid JSON in config file: {str(e)}")
+            raise
+        except Exception as e:
+            if logger:
+                logger.error(f"Error loading test config: {str(e)}")
+            raise
+    
+    def load_mapping_config(self, filepath: str) -> List[Dict[str, str]]:
+        """
+        Load mapping configuration file
+        
+        Args:
+            filepath: Path to mapping config JSON file
+        
+        Returns:
+            List of mapping dictionaries
+        """
+        if logger:
+            logger.debug(f"Loading mapping config from: {filepath}")
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                mappings = json.load(f)
+            
+            if logger:
+                logger.success(f"✓ Mapping config loaded successfully")
+                logger.info(f"  Total field mappings: {len(mappings)}")
+            
+            # Count array fields
+            array_fields = sum(1 for m in mappings if '[]' in m.get('mongoField', ''))
+            if array_fields > 0 and logger:
+                logger.debug(f"  Array fields: {array_fields}")
+            
+            return mappings
+            
+        except FileNotFoundError:
+            if logger:
+                logger.error(f"Mapping file not found: {filepath}")
+            raise
+        except json.JSONDecodeError as e:
+            if logger:
+                logger.error(f"Invalid JSON in mapping file: {str(e)}")
+            raise
+        except Exception as e:
+            if logger:
+                logger.error(f"Error loading mapping config: {str(e)}")
+            raise
+    
+    def build_json_to_mongo_map(self, mappings: List[Dict[str, str]]) -> Dict[str, str]:
+        """
+        Build reverse mapping: JSON attribute -> MongoDB field
+        
+        Args:
+            mappings: List of mapping dictionaries
+        
+        Returns:
+            Dictionary mapping JSON attributes to MongoDB fields
+        """
+        if logger:
+            logger.debug("Building reverse mapping (JSON attr -> MongoDB field)...")
+        
+        reverse_map = {}
+        
+        for mapping in mappings:
+            json_attr = mapping.get('jsonAttribute')
+            mongo_field = mapping.get('mongoField')
+            
+            if json_attr and mongo_field:
+                reverse_map[json_attr] = mongo_field
+        
+        if logger:
+            logger.debug(f"✓ Reverse mapping built: {len(reverse_map)} attributes")
+        
+        return reverse_map
+
+
+# Lazy-loaded global config loader instance
+_config_loader_instance: Optional[ConfigLoader] = None
+
+
+def get_config_loader() -> ConfigLoader:
+    """
+    Get or create the global config loader instance (lazy loading)
+    
+    Returns:
+        ConfigLoader instance
+    """
+    global _config_loader_instance
+    if _config_loader_instance is None:
+        _config_loader_instance = ConfigLoader()
+    return _config_loader_instance
+
+
+# Create a module-level variable that acts like the old global instance
+# This allows 'from .config_loader import config_loader' to still work
+class ConfigLoaderProxy:
+    """Proxy that delegates to the lazy-loaded instance"""
+    
+    def __getattr__(self, name):
+        return getattr(get_config_loader(), name)
+
+
+config_loader = ConfigLoaderProxy()
+```
+
+---
+
+## EXPLANATION
+
+### **How Lazy Loading Works:**
+
+1. **Before (Problem):**
+   ```python
+   # At module import time
+   config_loader = ConfigLoader()  # __init__ runs immediately
+   # logger is None at this point → ERROR
+   ```
+
+2. **After (Solution):**
+   ```python
+   # At module import time
+   config_loader = ConfigLoaderProxy()  # Just creates proxy, no ConfigLoader yet
+   
+   # Later, when actually used
+   config_loader.load_test_config()  # NOW ConfigLoader is created
+   # logger has been initialized by this point → SUCCESS
+   ```
+
+### **ConfigLoaderProxy Magic:**
+
+When you do `config_loader.load_test_config()`:
+1. Python calls `ConfigLoaderProxy.__getattr__('load_test_config')`
+2. Proxy calls `get_config_loader()` which creates real ConfigLoader if needed
+3. Returns the method from the real ConfigLoader
+4. Method executes normally
+
+This maintains backward compatibility - all existing code that uses `config_loader` still works!
+
+---
+
+## TEST THE FIX
+
+Run the test again:
+
+```bash
+python run_test.py --debug
+```
+
+You should now see proper initialization without the AttributeError! 🎉
+
+Let me know what happens!
