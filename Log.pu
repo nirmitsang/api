@@ -1,245 +1,621 @@
-Perfect! Let's implement Option 3 (Lazy Loading) properly.
+Good progress! Now we have a different error. The issue is in `src/main.py` line 412 - `logger.header()` is being called, but `logger` is `None`.
+
+This is the same issue but in a different file. The `logger` in `main.py` is also trying to be used before it's initialized.
 
 ---
 
-## UPDATE: src/config_loader.py
+## THE FIX
 
-Replace the entire file with this:
+We need to ensure that **logger is never None** when methods are called. The issue is that `main.py` imports `logger` directly, but it's `None` until `init_logger()` is called in `run_test.py`.
+
+### **Update src/main.py**
+
+At the top of the file, change the import:
+
+**Change from:**
+```python
+from .logger import logger
+```
+
+**Change to:**
+```python
+from . import logger as logger_module
+```
+
+Then, at the beginning of the `run()` method, get the logger:
+
+**Find the `run()` method and update it:**
 
 ```python
-"""
-Configuration Loader Module
-Loads and processes configuration files with environment variable substitution
-"""
-
-import os
-import json
-import re
-from typing import Dict, Any, List, Optional
-from dotenv import load_dotenv
-from .logger import logger
-
-
-class ConfigLoader:
-    """Loads configuration files and handles environment variables"""
+def run(self):
+    """Main execution flow"""
+    # Get the initialized logger
+    logger = logger_module.logger
     
-    def __init__(self):
-        """Initialize config loader"""
-        # Load .env file
-        load_dotenv()
-        # Don't use logger here - it may not be initialized yet
+    if logger is None:
+        print("ERROR: Logger not initialized!")
+        return False
     
-    def replace_env_variables(self, text: str) -> str:
-        """
-        Replace ${ENV_VAR} placeholders with actual environment values
-        
-        Args:
-            text: Text containing ${ENV_VAR} placeholders
-        
-        Returns:
-            Text with placeholders replaced
-        """
-        def replacer(match):
-            env_var = match.group(1)
-            value = os.getenv(env_var)
-            
-            if value is None:
-                if logger:
-                    logger.warn(f"Environment variable {env_var} not found in .env file")
-                return match.group(0)  # Return original if not found
-            
-            if logger:
-                logger.debug(f"Replaced ${{{env_var}}} with value from .env")
-            return value
-        
-        # Replace all ${VAR} patterns
-        return re.sub(r'\$\{([^}]+)\}', replacer, text)
+    self.start_time = time.time()
     
-    def load_test_config(self, filepath: str) -> Dict[str, Any]:
-        """
-        Load test configuration file
-        
-        Args:
-            filepath: Path to test config JSON file
-        
-        Returns:
-            Configuration dictionary with env vars replaced
-        """
-        if logger:
-            logger.debug(f"Loading test config from: {filepath}")
-        
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Replace environment variables
-            content = self.replace_env_variables(content)
-            
-            # Parse JSON
-            config = json.loads(content)
-            
-            if logger:
-                logger.success(f"✓ Test config loaded successfully")
-                logger.debug(f"  API Name: {config.get('apiName')}")
-                logger.debug(f"  MongoDB Collection: {config.get('mongoCollection')}")
-                logger.debug(f"  Test Payment IDs: {len(config.get('testPaymentIds', []))}")
-            
-            return config
-            
-        except FileNotFoundError:
-            if logger:
-                logger.error(f"Config file not found: {filepath}")
-            raise
-        except json.JSONDecodeError as e:
-            if logger:
-                logger.error(f"Invalid JSON in config file: {str(e)}")
-            raise
-        except Exception as e:
-            if logger:
-                logger.error(f"Error loading test config: {str(e)}")
-            raise
+    logger.header("API MIGRATION TEST UTILITY")
+    logger.info(f"Started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
     
-    def load_mapping_config(self, filepath: str) -> List[Dict[str, str]]:
-        """
-        Load mapping configuration file
-        
-        Args:
-            filepath: Path to mapping config JSON file
-        
-        Returns:
-            List of mapping dictionaries
-        """
-        if logger:
-            logger.debug(f"Loading mapping config from: {filepath}")
-        
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                mappings = json.load(f)
-            
-            if logger:
-                logger.success(f"✓ Mapping config loaded successfully")
-                logger.info(f"  Total field mappings: {len(mappings)}")
-            
-            # Count array fields
-            array_fields = sum(1 for m in mappings if '[]' in m.get('mongoField', ''))
-            if array_fields > 0 and logger:
-                logger.debug(f"  Array fields: {array_fields}")
-            
-            return mappings
-            
-        except FileNotFoundError:
-            if logger:
-                logger.error(f"Mapping file not found: {filepath}")
-            raise
-        except json.JSONDecodeError as e:
-            if logger:
-                logger.error(f"Invalid JSON in mapping file: {str(e)}")
-            raise
-        except Exception as e:
-            if logger:
-                logger.error(f"Error loading mapping config: {str(e)}")
-            raise
-    
-    def build_json_to_mongo_map(self, mappings: List[Dict[str, str]]) -> Dict[str, str]:
-        """
-        Build reverse mapping: JSON attribute -> MongoDB field
-        
-        Args:
-            mappings: List of mapping dictionaries
-        
-        Returns:
-            Dictionary mapping JSON attributes to MongoDB fields
-        """
-        if logger:
-            logger.debug("Building reverse mapping (JSON attr -> MongoDB field)...")
-        
-        reverse_map = {}
-        
-        for mapping in mappings:
-            json_attr = mapping.get('jsonAttribute')
-            mongo_field = mapping.get('mongoField')
-            
-            if json_attr and mongo_field:
-                reverse_map[json_attr] = mongo_field
-        
-        if logger:
-            logger.debug(f"✓ Reverse mapping built: {len(reverse_map)} attributes")
-        
-        return reverse_map
-
-
-# Lazy-loaded global config loader instance
-_config_loader_instance: Optional[ConfigLoader] = None
-
-
-def get_config_loader() -> ConfigLoader:
-    """
-    Get or create the global config loader instance (lazy loading)
-    
-    Returns:
-        ConfigLoader instance
-    """
-    global _config_loader_instance
-    if _config_loader_instance is None:
-        _config_loader_instance = ConfigLoader()
-    return _config_loader_instance
-
-
-# Create a module-level variable that acts like the old global instance
-# This allows 'from .config_loader import config_loader' to still work
-class ConfigLoaderProxy:
-    """Proxy that delegates to the lazy-loaded instance"""
-    
-    def __getattr__(self, name):
-        return getattr(get_config_loader(), name)
-
-
-config_loader = ConfigLoaderProxy()
+    # ... rest of the method
 ```
 
 ---
 
-## EXPLANATION
+## BETTER FIX: Make logger a function
 
-### **How Lazy Loading Works:**
+Actually, let's fix this properly by making the logger access dynamic throughout the file.
 
-1. **Before (Problem):**
-   ```python
-   # At module import time
-   config_loader = ConfigLoader()  # __init__ runs immediately
-   # logger is None at this point → ERROR
-   ```
+### **Complete Updated src/main.py**
 
-2. **After (Solution):**
-   ```python
-   # At module import time
-   config_loader = ConfigLoaderProxy()  # Just creates proxy, no ConfigLoader yet
-   
-   # Later, when actually used
-   config_loader.load_test_config()  # NOW ConfigLoader is created
-   # logger has been initialized by this point → SUCCESS
-   ```
+Replace the import section and add a helper function:
 
-### **ConfigLoaderProxy Magic:**
+```python
+"""
+Main Orchestrator Module
+Coordinates the entire test workflow
+"""
 
-When you do `config_loader.load_test_config()`:
-1. Python calls `ConfigLoaderProxy.__getattr__('load_test_config')`
-2. Proxy calls `get_config_loader()` which creates real ConfigLoader if needed
-3. Returns the method from the real ConfigLoader
-4. Method executes normally
+import time
+from typing import List, Dict, Any, Set
+from .config_loader import config_loader
+from .mongo_client import MongoDBClient
+from .token_manager import TokenManager
+from .api_client import APIClient
+from .response_parser import ResponseParser
+from .comparator import Comparator
+from .coverage_tracker import CoverageTracker
+from .reporter import Reporter
+from .utils import get_nested_value
+from . import logger as logger_module
 
-This maintains backward compatibility - all existing code that uses `config_loader` still works!
+
+def get_logger():
+    """Get the initialized logger instance"""
+    return logger_module.logger
+
+
+class TestOrchestrator:
+    """Main orchestrator for API migration testing"""
+    
+    def __init__(self):
+        """Initialize the test orchestrator"""
+        self.test_config = None
+        self.mapping_config = None
+        self.json_to_mongo_map = None
+        
+        # Components
+        self.mongo_client = None
+        self.token_manager = None
+        self.api_client = None
+        self.response_parser = None
+        self.comparator = None
+        self.coverage_tracker = None
+        self.reporter = None
+        
+        # Result collectors
+        self.attribute_results = []
+        self.json_diff_results = []
+        self.tested_payment_ids = set()
+        
+        # Timing
+        self.start_time = None
+    
+    def load_configurations(self) -> bool:
+        """
+        Load all configuration files
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        logger = get_logger()
+        
+        try:
+            logger.info("Loading configurations...")
+            
+            # Load test config
+            self.test_config = config_loader.load_test_config('configs/test-sample.json')
+            
+            # Load mapping config
+            self.mapping_config = config_loader.load_mapping_config('configs/mapping-sample.json')
+            
+            # Build reverse mapping (JSON attribute -> MongoDB field)
+            self.json_to_mongo_map = config_loader.build_json_to_mongo_map(self.mapping_config)
+            
+            logger.success("✓ All configurations loaded successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load configurations: {str(e)}")
+            return False
+```
+
+Now update **EVERY method** in the `TestOrchestrator` class to start with:
+
+```python
+logger = get_logger()
+```
 
 ---
 
-## TEST THE FIX
+## EVEN BETTER: Store logger in __init__
 
-Run the test again:
+Actually, the cleanest approach is to store the logger reference in the orchestrator:
+
+### **Updated src/main.py (Complete Clean Version)**
+
+```python
+"""
+Main Orchestrator Module
+Coordinates the entire test workflow
+"""
+
+import time
+from typing import List, Dict, Any, Set
+from .config_loader import config_loader
+from .mongo_client import MongoDBClient
+from .token_manager import TokenManager
+from .api_client import APIClient
+from .response_parser import ResponseParser
+from .comparator import Comparator
+from .coverage_tracker import CoverageTracker
+from .reporter import Reporter
+from .utils import get_nested_value
+from . import logger as logger_module
+
+
+class TestOrchestrator:
+    """Main orchestrator for API migration testing"""
+    
+    def __init__(self):
+        """Initialize the test orchestrator"""
+        self.logger = None  # Will be set when run() is called
+        
+        self.test_config = None
+        self.mapping_config = None
+        self.json_to_mongo_map = None
+        
+        # Components
+        self.mongo_client = None
+        self.token_manager = None
+        self.api_client = None
+        self.response_parser = None
+        self.comparator = None
+        self.coverage_tracker = None
+        self.reporter = None
+        
+        # Result collectors
+        self.attribute_results = []
+        self.json_diff_results = []
+        self.tested_payment_ids = set()
+        
+        # Timing
+        self.start_time = None
+    
+    def load_configurations(self) -> bool:
+        """
+        Load all configuration files
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info("Loading configurations...")
+            
+            # Load test config
+            self.test_config = config_loader.load_test_config('configs/test-sample.json')
+            
+            # Load mapping config
+            self.mapping_config = config_loader.load_mapping_config('configs/mapping-sample.json')
+            
+            # Build reverse mapping (JSON attribute -> MongoDB field)
+            self.json_to_mongo_map = config_loader.build_json_to_mongo_map(self.mapping_config)
+            
+            self.logger.success("✓ All configurations loaded successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load configurations: {str(e)}")
+            return False
+    
+    def initialize_components(self) -> bool:
+        """
+        Initialize all components with config values
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info("\nInitializing components...")
+            
+            # Extract config values
+            mongo_conn = self.test_config['mongoConnectionString']
+            mongo_db = self.test_config['mongoDatabase']
+            mongo_coll = self.test_config['mongoCollection']
+            token_url = self.test_config['tokenUrl']
+            root_path = self.test_config.get('jsonResponseRootPath', '')
+            payment_id_attr = self.test_config['paymentIdMapping']['jsonAttribute']
+            
+            # Initialize MongoDB client
+            self.logger.info("  Initializing MongoDB client...")
+            self.mongo_client = MongoDBClient(mongo_conn, mongo_db, mongo_coll)
+            
+            if not self.mongo_client.connect():
+                self.logger.error("MongoDB connection failed")
+                return False
+            
+            # Initialize token manager
+            self.logger.info("  Initializing token manager...")
+            self.token_manager = TokenManager(token_url)
+            token = self.token_manager.get_token()
+            
+            if not token:
+                self.logger.error("Failed to obtain authentication token")
+                return False
+            
+            # Initialize API client
+            self.logger.info("  Initializing API client...")
+            self.api_client = APIClient(token, root_path, payment_id_attr)
+            
+            # Initialize other components
+            self.logger.info("  Initializing other components...")
+            self.response_parser = ResponseParser()
+            self.comparator = Comparator()
+            self.coverage_tracker = CoverageTracker(self.mapping_config)
+            self.reporter = Reporter()
+            
+            self.logger.success("✓ All components initialized successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize components: {str(e)}")
+            return False
+    
+    def test_single_payment_id(self, payment_id: str) -> Dict[str, Any]:
+        """
+        Test a single payment ID - core testing logic
+        
+        Args:
+            payment_id: Payment ID to test
+        
+        Returns:
+            Dict with test results summary
+        """
+        result = {
+            'paymentId': payment_id,
+            'success': False,
+            'tested_count': 0,
+            'passed': 0,
+            'failed': 0
+        }
+        
+        try:
+            payment_id_field = self.test_config['paymentIdMapping']['mongoField']
+            java21_url = self.test_config['java21Url']
+            java8_url = self.test_config.get('java8Url')
+            
+            # Step 1: Query MongoDB
+            self.logger.debug(f"  Step 1: Querying MongoDB...")
+            mongo_result = self.mongo_client.find_by_payment_id(payment_id, payment_id_field)
+            
+            if not mongo_result['success']:
+                self.logger.error(f"  MongoDB query failed: {mongo_result.get('error')}")
+                result['error'] = mongo_result.get('error')
+                return result
+            
+            mongo_doc = mongo_result['data']
+            
+            # Step 2: Call Java 21 API
+            self.logger.debug(f"  Step 2: Calling Java 21 API...")
+            java21_result = self.api_client.call_api(payment_id, java21_url)
+            
+            if not java21_result['success']:
+                self.logger.error(f"  Java 21 API call failed: {java21_result.get('error')}")
+                result['error'] = java21_result.get('error')
+                return result
+            
+            java21_response = java21_result['data']
+            
+            # Step 3: Call Java 8 API (if exists)
+            java8_response = None
+            has_java8 = java8_url is not None
+            
+            if has_java8:
+                self.logger.debug(f"  Step 3: Calling Java 8 API...")
+                java8_result = self.api_client.call_api(payment_id, java8_url)
+                
+                if java8_result['success']:
+                    java8_response = java8_result['data']
+                else:
+                    self.logger.warn(f"  Java 8 API call failed: {java8_result.get('error')}")
+            
+            # Step 4: JSON Diff (only if Java 8 exists)
+            if has_java8 and java8_response:
+                self.logger.debug(f"  Step 4: Performing JSON diff...")
+                diff_result = self.comparator.compare_json_diff(java8_response, java21_response)
+                diff_result['paymentId'] = payment_id
+                self.json_diff_results.append(diff_result)
+            
+            # Step 5: Parse API response to get all attributes
+            self.logger.debug(f"  Step 5: Parsing API response attributes...")
+            response_attributes = self.response_parser.extract_all_attributes(java21_response)
+            
+            self.logger.debug(f"    Found {len(response_attributes)} attributes in response")
+            
+            # Step 6: Compare each attribute
+            self.logger.debug(f"  Step 6: Comparing attributes...")
+            
+            for attribute in response_attributes:
+                # Look up MongoDB field for this attribute
+                mongo_field = self.json_to_mongo_map.get(attribute)
+                
+                if not mongo_field:
+                    # This attribute is not in our mapping config - skip it
+                    self.logger.debug(f"    Skipping {attribute} (not in mapping)")
+                    continue
+                
+                # Get values from all sources
+                mongo_value = get_nested_value(mongo_doc, mongo_field.replace('[]', ''))
+                java21_value = get_nested_value(java21_response, attribute)
+                java8_value = get_nested_value(java8_response, attribute) if java8_response else None
+                
+                # Compare values
+                status = self.comparator.compare_values(mongo_value, java21_value, java8_value)
+                
+                # Add to results
+                attr_result = {
+                    'paymentId': payment_id,
+                    'attributeName': attribute,
+                    'mongoField': mongo_field,
+                    'mongoValue': mongo_value if mongo_value is not None else '',
+                    'java21Value': java21_value if java21_value is not None else '',
+                    'java8Value': java8_value if java8_value is not None else '',
+                    'status': status
+                }
+                
+                self.attribute_results.append(attr_result)
+                
+                # Update counters
+                result['tested_count'] += 1
+                if status == 'PASS':
+                    result['passed'] += 1
+                else:
+                    result['failed'] += 1
+                
+                # Mark as covered
+                self.coverage_tracker.mark_covered(attribute)
+            
+            result['success'] = True
+            self.logger.debug(f"  ✓ Testing complete: {result['tested_count']} attributes tested, {result['passed']} passed, {result['failed']} failed")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"  Error testing payment ID: {str(e)}")
+            result['error'] = str(e)
+            return result
+    
+    def run_phase_1(self):
+        """Execute Phase 1: Test configured payment IDs"""
+        self.logger.header("PHASE 1: Testing Configured Payment IDs")
+        
+        test_payment_ids = self.test_config.get('testPaymentIds', [])
+        
+        if not test_payment_ids:
+            self.logger.warn("No test payment IDs configured!")
+            return
+        
+        self.logger.info(f"Testing {len(test_payment_ids)} configured payment IDs...\n")
+        
+        for idx, payment_id in enumerate(test_payment_ids, 1):
+            self.logger.info(f"[{idx}/{len(test_payment_ids)}] Testing Payment ID: {payment_id}")
+            self.logger.separator('-', 60)
+            
+            result = self.test_single_payment_id(payment_id)
+            self.tested_payment_ids.add(payment_id)
+            
+            if result['success']:
+                self.logger.success(f"✓ Completed: {result['tested_count']} attributes, {result['passed']} passed, {result['failed']} failed\n")
+            else:
+                self.logger.error(f"✗ Testing failed: {result.get('error')}\n")
+        
+        # Show Phase 1 coverage
+        self.coverage_tracker.print_coverage_summary()
+    
+    def run_phase_2(self):
+        """Execute Phase 2: Find and test uncovered attributes"""
+        self.logger.header("PHASE 2: Finding Records for Uncovered Attributes")
+        
+        # Get uncovered attributes
+        uncovered_mappings = self.coverage_tracker.get_uncovered_mappings()
+        
+        if not uncovered_mappings:
+            self.logger.info("All attributes covered in Phase 1! Phase 2 not needed.")
+            return
+        
+        self.logger.info(f"{len(uncovered_mappings)} attributes not yet covered")
+        self.logger.info("Searching for payment IDs with these attributes...\n")
+        
+        # Find payment IDs for uncovered attributes
+        payment_ids_to_test: Set[str] = set()
+        payment_id_field = self.test_config['paymentIdMapping']['mongoField']
+        
+        self.logger.info("Querying MongoDB for uncovered attributes...")
+        
+        for idx, mapping in enumerate(uncovered_mappings, 1):
+            mongo_field = mapping['mongoField']
+            json_attr = mapping['jsonAttribute']
+            
+            self.logger.debug(f"[{idx}/{len(uncovered_mappings)}] {json_attr}")
+            
+            # Find payment ID with this field
+            payment_id = self.mongo_client.find_one_with_field(mongo_field, payment_id_field)
+            
+            if payment_id:
+                if payment_id not in payment_ids_to_test:
+                    payment_ids_to_test.add(payment_id)
+                    self.logger.debug(f"  → Added {payment_id} to test queue")
+                else:
+                    self.logger.debug(f"  → {payment_id} already in queue")
+            else:
+                self.logger.debug(f"  → No data found")
+        
+        self.logger.info(f"\n✓ Found {len(payment_ids_to_test)} unique payment IDs to test\n")
+        
+        if not payment_ids_to_test:
+            self.logger.warn("No payment IDs found for uncovered attributes")
+            return
+        
+        # Test each found payment ID
+        self.logger.info("Testing found payment IDs...\n")
+        
+        for idx, payment_id in enumerate(payment_ids_to_test, 1):
+            self.logger.info(f"[{idx}/{len(payment_ids_to_test)}] Testing Payment ID: {payment_id}")
+            self.logger.separator('-', 60)
+            
+            result = self.test_single_payment_id(payment_id)
+            self.tested_payment_ids.add(payment_id)
+            
+            if result['success']:
+                self.logger.success(f"✓ Completed: {result['tested_count']} attributes, {result['passed']} passed, {result['failed']} failed\n")
+            else:
+                self.logger.error(f"✗ Testing failed: {result.get('error')}\n")
+        
+        # Show final coverage
+        self.coverage_tracker.print_coverage_summary()
+    
+    def generate_reports(self):
+        """Generate all reports"""
+        self.logger.header("GENERATING REPORTS")
+        
+        api_name = self.test_config.get('apiName', 'unknown')
+        
+        # Get uncovered attributes for report
+        uncovered_mappings = self.coverage_tracker.get_uncovered_mappings()
+        uncovered_attrs = [
+            {
+                'attributeName': m['jsonAttribute'],
+                'mongoField': m['mongoField']
+            }
+            for m in uncovered_mappings
+        ]
+        
+        try:
+            # Generate Excel report
+            excel_file = self.reporter.generate_excel_report(
+                api_name=api_name,
+                attribute_results=self.attribute_results,
+                uncovered_attributes=uncovered_attrs
+            )
+            
+            # Generate JSON diff report (only if Java 8 exists)
+            if self.test_config.get('java8Url') and self.json_diff_results:
+                json_diff_file = self.reporter.generate_json_diff_report(
+                    api_name=api_name,
+                    json_diff_results=self.json_diff_results
+                )
+            
+            self.logger.success("\n✓ All reports generated successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error generating reports: {str(e)}")
+    
+    def print_final_summary(self):
+        """Print final test summary"""
+        self.logger.header("TEST SUMMARY")
+        
+        # Calculate stats
+        total_tested = len(self.attribute_results)
+        total_passed = sum(1 for r in self.attribute_results if r['status'] == 'PASS')
+        total_failed = sum(1 for r in self.attribute_results if r['status'] == 'FAIL')
+        
+        coverage = self.coverage_tracker.get_coverage_summary()
+        
+        self.logger.info(f"\nPayment IDs Tested: {len(self.tested_payment_ids)}")
+        self.logger.info(f"\nAttribute Testing:")
+        self.logger.info(f"  Total tests: {total_tested}")
+        self.logger.success(f"  ✓ Passed: {total_passed} ({total_passed/total_tested*100:.1f}%)" if total_tested > 0 else "  ✓ Passed: 0")
+        self.logger.error(f"  ✗ Failed: {total_failed} ({total_failed/total_tested*100:.1f}%)" if total_tested > 0 else "  ✗ Failed: 0")
+        
+        self.logger.info(f"\nCoverage:")
+        self.logger.info(f"  Total attributes: {coverage['total_attributes']}")
+        self.logger.success(f"  ✓ Covered: {coverage['covered_count']} ({coverage['coverage_percentage']:.1f}%)")
+        self.logger.warn(f"  ⚠ Uncovered: {coverage['uncovered_count']} ({100-coverage['coverage_percentage']:.1f}%)")
+        
+        if self.json_diff_results:
+            diff_passed = sum(1 for r in self.json_diff_results if r['status'] == 'PASS')
+            diff_failed = len(self.json_diff_results) - diff_passed
+            self.logger.info(f"\nJSON Diff (Java 8 vs Java 21):")
+            self.logger.success(f"  ✓ Passed: {diff_passed}")
+            if diff_failed > 0:
+                self.logger.error(f"  ✗ Failed: {diff_failed}")
+        
+        execution_time = time.time() - self.start_time
+        self.logger.info(f"\nTotal Execution Time: {execution_time:.2f} seconds")
+        self.logger.separator()
+    
+    def run(self):
+        """Main execution flow"""
+        # Store logger reference
+        self.logger = logger_module.logger
+        
+        if self.logger is None:
+            print("ERROR: Logger not initialized! Call init_logger() first.")
+            return False
+        
+        self.start_time = time.time()
+        
+        self.logger.header("API MIGRATION TEST UTILITY")
+        self.logger.info(f"Started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        
+        # Load configurations
+        if not self.load_configurations():
+            self.logger.error("Failed to load configurations. Exiting.")
+            return False
+        
+        # Initialize components
+        if not self.initialize_components():
+            self.logger.error("Failed to initialize components. Exiting.")
+            return False
+        
+        # Run Phase 1
+        self.logger.separator()
+        self.run_phase_1()
+        
+        # Run Phase 2
+        self.logger.separator()
+        self.run_phase_2()
+        
+        # Generate reports
+        self.logger.separator()
+        self.generate_reports()
+        
+        # Print summary
+        self.logger.separator()
+        self.print_final_summary()
+        
+        # Cleanup
+        if self.mongo_client:
+            self.mongo_client.close()
+        
+        return True
+```
+
+---
+
+This complete file now properly handles the logger by:
+1. Storing it as `self.logger` in the `run()` method
+2. Using `self.logger` throughout all methods
+3. Checking if it's None before starting
+
+Try running again:
 
 ```bash
 python run_test.py --debug
 ```
 
-You should now see proper initialization without the AttributeError! 🎉
-
-Let me know what happens!
+This should work now! 🚀
