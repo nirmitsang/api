@@ -1,621 +1,149 @@
-Good progress! Now we have a different error. The issue is in `src/main.py` line 412 - `logger.header()` is being called, but `logger` is `None`.
 
-This is the same issue but in a different file. The `logger` in `main.py` is also trying to be used before it's initialized.
-
----
-
-## THE FIX
-
-We need to ensure that **logger is never None** when methods are called. The issue is that `main.py` imports `logger` directly, but it's `None` until `init_logger()` is called in `run_test.py`.
-
-### **Update src/main.py**
-
-At the top of the file, change the import:
-
-**Change from:**
-```python
-from .logger import logger
-```
-
-**Change to:**
-```python
-from . import logger as logger_module
-```
-
-Then, at the beginning of the `run()` method, get the logger:
-
-**Find the `run()` method and update it:**
-
-```python
-def run(self):
-    """Main execution flow"""
-    # Get the initialized logger
-    logger = logger_module.logger
-    
-    if logger is None:
-        print("ERROR: Logger not initialized!")
-        return False
-    
-    self.start_time = time.time()
-    
-    logger.header("API MIGRATION TEST UTILITY")
-    logger.info(f"Started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
-    # ... rest of the method
-```
+Yes! There's a much simpler solution - **initialize the logger at module import time** with a default instance, instead of waiting for `init_logger()` to be called.
 
 ---
 
-## BETTER FIX: Make logger a function
+## SIMPLE FIX: Update src/logger.py
 
-Actually, let's fix this properly by making the logger access dynamic throughout the file.
-
-### **Complete Updated src/main.py**
-
-Replace the import section and add a helper function:
+Replace the entire file with this:
 
 ```python
 """
-Main Orchestrator Module
-Coordinates the entire test workflow
+Logger Module
+Provides colored console logging with debug levels
 """
 
-import time
-from typing import List, Dict, Any, Set
-from .config_loader import config_loader
-from .mongo_client import MongoDBClient
-from .token_manager import TokenManager
-from .api_client import APIClient
-from .response_parser import ResponseParser
-from .comparator import Comparator
-from .coverage_tracker import CoverageTracker
-from .reporter import Reporter
-from .utils import get_nested_value
-from . import logger as logger_module
+import sys
+from datetime import datetime
+from typing import Optional
 
 
-def get_logger():
-    """Get the initialized logger instance"""
-    return logger_module.logger
-
-
-class TestOrchestrator:
-    """Main orchestrator for API migration testing"""
+class Logger:
+    """Simple colored logger with debug levels"""
     
-    def __init__(self):
-        """Initialize the test orchestrator"""
-        self.test_config = None
-        self.mapping_config = None
-        self.json_to_mongo_map = None
-        
-        # Components
-        self.mongo_client = None
-        self.token_manager = None
-        self.api_client = None
-        self.response_parser = None
-        self.comparator = None
-        self.coverage_tracker = None
-        self.reporter = None
-        
-        # Result collectors
-        self.attribute_results = []
-        self.json_diff_results = []
-        self.tested_payment_ids = set()
-        
-        # Timing
-        self.start_time = None
+    # ANSI color codes
+    COLORS = {
+        'RESET': '\033[0m',
+        'RED': '\033[91m',
+        'GREEN': '\033[92m',
+        'YELLOW': '\033[93m',
+        'BLUE': '\033[94m',
+        'MAGENTA': '\033[95m',
+        'CYAN': '\033[96m',
+        'WHITE': '\033[97m',
+        'BOLD': '\033[1m'
+    }
     
-    def load_configurations(self) -> bool:
+    def __init__(self, debug_mode: bool = False):
         """
-        Load all configuration files
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        logger = get_logger()
-        
-        try:
-            logger.info("Loading configurations...")
-            
-            # Load test config
-            self.test_config = config_loader.load_test_config('configs/test-sample.json')
-            
-            # Load mapping config
-            self.mapping_config = config_loader.load_mapping_config('configs/mapping-sample.json')
-            
-            # Build reverse mapping (JSON attribute -> MongoDB field)
-            self.json_to_mongo_map = config_loader.build_json_to_mongo_map(self.mapping_config)
-            
-            logger.success("✓ All configurations loaded successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load configurations: {str(e)}")
-            return False
-```
-
-Now update **EVERY method** in the `TestOrchestrator` class to start with:
-
-```python
-logger = get_logger()
-```
-
----
-
-## EVEN BETTER: Store logger in __init__
-
-Actually, the cleanest approach is to store the logger reference in the orchestrator:
-
-### **Updated src/main.py (Complete Clean Version)**
-
-```python
-"""
-Main Orchestrator Module
-Coordinates the entire test workflow
-"""
-
-import time
-from typing import List, Dict, Any, Set
-from .config_loader import config_loader
-from .mongo_client import MongoDBClient
-from .token_manager import TokenManager
-from .api_client import APIClient
-from .response_parser import ResponseParser
-from .comparator import Comparator
-from .coverage_tracker import CoverageTracker
-from .reporter import Reporter
-from .utils import get_nested_value
-from . import logger as logger_module
-
-
-class TestOrchestrator:
-    """Main orchestrator for API migration testing"""
-    
-    def __init__(self):
-        """Initialize the test orchestrator"""
-        self.logger = None  # Will be set when run() is called
-        
-        self.test_config = None
-        self.mapping_config = None
-        self.json_to_mongo_map = None
-        
-        # Components
-        self.mongo_client = None
-        self.token_manager = None
-        self.api_client = None
-        self.response_parser = None
-        self.comparator = None
-        self.coverage_tracker = None
-        self.reporter = None
-        
-        # Result collectors
-        self.attribute_results = []
-        self.json_diff_results = []
-        self.tested_payment_ids = set()
-        
-        # Timing
-        self.start_time = None
-    
-    def load_configurations(self) -> bool:
-        """
-        Load all configuration files
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            self.logger.info("Loading configurations...")
-            
-            # Load test config
-            self.test_config = config_loader.load_test_config('configs/test-sample.json')
-            
-            # Load mapping config
-            self.mapping_config = config_loader.load_mapping_config('configs/mapping-sample.json')
-            
-            # Build reverse mapping (JSON attribute -> MongoDB field)
-            self.json_to_mongo_map = config_loader.build_json_to_mongo_map(self.mapping_config)
-            
-            self.logger.success("✓ All configurations loaded successfully")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to load configurations: {str(e)}")
-            return False
-    
-    def initialize_components(self) -> bool:
-        """
-        Initialize all components with config values
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            self.logger.info("\nInitializing components...")
-            
-            # Extract config values
-            mongo_conn = self.test_config['mongoConnectionString']
-            mongo_db = self.test_config['mongoDatabase']
-            mongo_coll = self.test_config['mongoCollection']
-            token_url = self.test_config['tokenUrl']
-            root_path = self.test_config.get('jsonResponseRootPath', '')
-            payment_id_attr = self.test_config['paymentIdMapping']['jsonAttribute']
-            
-            # Initialize MongoDB client
-            self.logger.info("  Initializing MongoDB client...")
-            self.mongo_client = MongoDBClient(mongo_conn, mongo_db, mongo_coll)
-            
-            if not self.mongo_client.connect():
-                self.logger.error("MongoDB connection failed")
-                return False
-            
-            # Initialize token manager
-            self.logger.info("  Initializing token manager...")
-            self.token_manager = TokenManager(token_url)
-            token = self.token_manager.get_token()
-            
-            if not token:
-                self.logger.error("Failed to obtain authentication token")
-                return False
-            
-            # Initialize API client
-            self.logger.info("  Initializing API client...")
-            self.api_client = APIClient(token, root_path, payment_id_attr)
-            
-            # Initialize other components
-            self.logger.info("  Initializing other components...")
-            self.response_parser = ResponseParser()
-            self.comparator = Comparator()
-            self.coverage_tracker = CoverageTracker(self.mapping_config)
-            self.reporter = Reporter()
-            
-            self.logger.success("✓ All components initialized successfully")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize components: {str(e)}")
-            return False
-    
-    def test_single_payment_id(self, payment_id: str) -> Dict[str, Any]:
-        """
-        Test a single payment ID - core testing logic
+        Initialize logger
         
         Args:
-            payment_id: Payment ID to test
-        
-        Returns:
-            Dict with test results summary
+            debug_mode: If True, show DEBUG level logs
         """
-        result = {
-            'paymentId': payment_id,
-            'success': False,
-            'tested_count': 0,
-            'passed': 0,
-            'failed': 0
-        }
-        
-        try:
-            payment_id_field = self.test_config['paymentIdMapping']['mongoField']
-            java21_url = self.test_config['java21Url']
-            java8_url = self.test_config.get('java8Url')
-            
-            # Step 1: Query MongoDB
-            self.logger.debug(f"  Step 1: Querying MongoDB...")
-            mongo_result = self.mongo_client.find_by_payment_id(payment_id, payment_id_field)
-            
-            if not mongo_result['success']:
-                self.logger.error(f"  MongoDB query failed: {mongo_result.get('error')}")
-                result['error'] = mongo_result.get('error')
-                return result
-            
-            mongo_doc = mongo_result['data']
-            
-            # Step 2: Call Java 21 API
-            self.logger.debug(f"  Step 2: Calling Java 21 API...")
-            java21_result = self.api_client.call_api(payment_id, java21_url)
-            
-            if not java21_result['success']:
-                self.logger.error(f"  Java 21 API call failed: {java21_result.get('error')}")
-                result['error'] = java21_result.get('error')
-                return result
-            
-            java21_response = java21_result['data']
-            
-            # Step 3: Call Java 8 API (if exists)
-            java8_response = None
-            has_java8 = java8_url is not None
-            
-            if has_java8:
-                self.logger.debug(f"  Step 3: Calling Java 8 API...")
-                java8_result = self.api_client.call_api(payment_id, java8_url)
-                
-                if java8_result['success']:
-                    java8_response = java8_result['data']
-                else:
-                    self.logger.warn(f"  Java 8 API call failed: {java8_result.get('error')}")
-            
-            # Step 4: JSON Diff (only if Java 8 exists)
-            if has_java8 and java8_response:
-                self.logger.debug(f"  Step 4: Performing JSON diff...")
-                diff_result = self.comparator.compare_json_diff(java8_response, java21_response)
-                diff_result['paymentId'] = payment_id
-                self.json_diff_results.append(diff_result)
-            
-            # Step 5: Parse API response to get all attributes
-            self.logger.debug(f"  Step 5: Parsing API response attributes...")
-            response_attributes = self.response_parser.extract_all_attributes(java21_response)
-            
-            self.logger.debug(f"    Found {len(response_attributes)} attributes in response")
-            
-            # Step 6: Compare each attribute
-            self.logger.debug(f"  Step 6: Comparing attributes...")
-            
-            for attribute in response_attributes:
-                # Look up MongoDB field for this attribute
-                mongo_field = self.json_to_mongo_map.get(attribute)
-                
-                if not mongo_field:
-                    # This attribute is not in our mapping config - skip it
-                    self.logger.debug(f"    Skipping {attribute} (not in mapping)")
-                    continue
-                
-                # Get values from all sources
-                mongo_value = get_nested_value(mongo_doc, mongo_field.replace('[]', ''))
-                java21_value = get_nested_value(java21_response, attribute)
-                java8_value = get_nested_value(java8_response, attribute) if java8_response else None
-                
-                # Compare values
-                status = self.comparator.compare_values(mongo_value, java21_value, java8_value)
-                
-                # Add to results
-                attr_result = {
-                    'paymentId': payment_id,
-                    'attributeName': attribute,
-                    'mongoField': mongo_field,
-                    'mongoValue': mongo_value if mongo_value is not None else '',
-                    'java21Value': java21_value if java21_value is not None else '',
-                    'java8Value': java8_value if java8_value is not None else '',
-                    'status': status
-                }
-                
-                self.attribute_results.append(attr_result)
-                
-                # Update counters
-                result['tested_count'] += 1
-                if status == 'PASS':
-                    result['passed'] += 1
-                else:
-                    result['failed'] += 1
-                
-                # Mark as covered
-                self.coverage_tracker.mark_covered(attribute)
-            
-            result['success'] = True
-            self.logger.debug(f"  ✓ Testing complete: {result['tested_count']} attributes tested, {result['passed']} passed, {result['failed']} failed")
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"  Error testing payment ID: {str(e)}")
-            result['error'] = str(e)
-            return result
+        self.debug_mode = debug_mode
     
-    def run_phase_1(self):
-        """Execute Phase 1: Test configured payment IDs"""
-        self.logger.header("PHASE 1: Testing Configured Payment IDs")
-        
-        test_payment_ids = self.test_config.get('testPaymentIds', [])
-        
-        if not test_payment_ids:
-            self.logger.warn("No test payment IDs configured!")
-            return
-        
-        self.logger.info(f"Testing {len(test_payment_ids)} configured payment IDs...\n")
-        
-        for idx, payment_id in enumerate(test_payment_ids, 1):
-            self.logger.info(f"[{idx}/{len(test_payment_ids)}] Testing Payment ID: {payment_id}")
-            self.logger.separator('-', 60)
-            
-            result = self.test_single_payment_id(payment_id)
-            self.tested_payment_ids.add(payment_id)
-            
-            if result['success']:
-                self.logger.success(f"✓ Completed: {result['tested_count']} attributes, {result['passed']} passed, {result['failed']} failed\n")
-            else:
-                self.logger.error(f"✗ Testing failed: {result.get('error')}\n")
-        
-        # Show Phase 1 coverage
-        self.coverage_tracker.print_coverage_summary()
+    def _log(self, level: str, message: str, color: str):
+        """Internal logging function"""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        colored_level = f"{self.COLORS[color]}{level}{self.COLORS['RESET']}"
+        print(f"[{timestamp}] {colored_level}: {message}")
     
-    def run_phase_2(self):
-        """Execute Phase 2: Find and test uncovered attributes"""
-        self.logger.header("PHASE 2: Finding Records for Uncovered Attributes")
-        
-        # Get uncovered attributes
-        uncovered_mappings = self.coverage_tracker.get_uncovered_mappings()
-        
-        if not uncovered_mappings:
-            self.logger.info("All attributes covered in Phase 1! Phase 2 not needed.")
-            return
-        
-        self.logger.info(f"{len(uncovered_mappings)} attributes not yet covered")
-        self.logger.info("Searching for payment IDs with these attributes...\n")
-        
-        # Find payment IDs for uncovered attributes
-        payment_ids_to_test: Set[str] = set()
-        payment_id_field = self.test_config['paymentIdMapping']['mongoField']
-        
-        self.logger.info("Querying MongoDB for uncovered attributes...")
-        
-        for idx, mapping in enumerate(uncovered_mappings, 1):
-            mongo_field = mapping['mongoField']
-            json_attr = mapping['jsonAttribute']
-            
-            self.logger.debug(f"[{idx}/{len(uncovered_mappings)}] {json_attr}")
-            
-            # Find payment ID with this field
-            payment_id = self.mongo_client.find_one_with_field(mongo_field, payment_id_field)
-            
-            if payment_id:
-                if payment_id not in payment_ids_to_test:
-                    payment_ids_to_test.add(payment_id)
-                    self.logger.debug(f"  → Added {payment_id} to test queue")
-                else:
-                    self.logger.debug(f"  → {payment_id} already in queue")
-            else:
-                self.logger.debug(f"  → No data found")
-        
-        self.logger.info(f"\n✓ Found {len(payment_ids_to_test)} unique payment IDs to test\n")
-        
-        if not payment_ids_to_test:
-            self.logger.warn("No payment IDs found for uncovered attributes")
-            return
-        
-        # Test each found payment ID
-        self.logger.info("Testing found payment IDs...\n")
-        
-        for idx, payment_id in enumerate(payment_ids_to_test, 1):
-            self.logger.info(f"[{idx}/{len(payment_ids_to_test)}] Testing Payment ID: {payment_id}")
-            self.logger.separator('-', 60)
-            
-            result = self.test_single_payment_id(payment_id)
-            self.tested_payment_ids.add(payment_id)
-            
-            if result['success']:
-                self.logger.success(f"✓ Completed: {result['tested_count']} attributes, {result['passed']} passed, {result['failed']} failed\n")
-            else:
-                self.logger.error(f"✗ Testing failed: {result.get('error')}\n")
-        
-        # Show final coverage
-        self.coverage_tracker.print_coverage_summary()
+    def debug(self, message: str):
+        """Debug level - only shows if debug_mode is True"""
+        if self.debug_mode:
+            self._log('DEBUG', message, 'CYAN')
     
-    def generate_reports(self):
-        """Generate all reports"""
-        self.logger.header("GENERATING REPORTS")
-        
-        api_name = self.test_config.get('apiName', 'unknown')
-        
-        # Get uncovered attributes for report
-        uncovered_mappings = self.coverage_tracker.get_uncovered_mappings()
-        uncovered_attrs = [
-            {
-                'attributeName': m['jsonAttribute'],
-                'mongoField': m['mongoField']
-            }
-            for m in uncovered_mappings
-        ]
-        
-        try:
-            # Generate Excel report
-            excel_file = self.reporter.generate_excel_report(
-                api_name=api_name,
-                attribute_results=self.attribute_results,
-                uncovered_attributes=uncovered_attrs
-            )
-            
-            # Generate JSON diff report (only if Java 8 exists)
-            if self.test_config.get('java8Url') and self.json_diff_results:
-                json_diff_file = self.reporter.generate_json_diff_report(
-                    api_name=api_name,
-                    json_diff_results=self.json_diff_results
-                )
-            
-            self.logger.success("\n✓ All reports generated successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Error generating reports: {str(e)}")
+    def info(self, message: str):
+        """Info level - always shows"""
+        self._log('INFO', message, 'WHITE')
     
-    def print_final_summary(self):
-        """Print final test summary"""
-        self.logger.header("TEST SUMMARY")
-        
-        # Calculate stats
-        total_tested = len(self.attribute_results)
-        total_passed = sum(1 for r in self.attribute_results if r['status'] == 'PASS')
-        total_failed = sum(1 for r in self.attribute_results if r['status'] == 'FAIL')
-        
-        coverage = self.coverage_tracker.get_coverage_summary()
-        
-        self.logger.info(f"\nPayment IDs Tested: {len(self.tested_payment_ids)}")
-        self.logger.info(f"\nAttribute Testing:")
-        self.logger.info(f"  Total tests: {total_tested}")
-        self.logger.success(f"  ✓ Passed: {total_passed} ({total_passed/total_tested*100:.1f}%)" if total_tested > 0 else "  ✓ Passed: 0")
-        self.logger.error(f"  ✗ Failed: {total_failed} ({total_failed/total_tested*100:.1f}%)" if total_tested > 0 else "  ✗ Failed: 0")
-        
-        self.logger.info(f"\nCoverage:")
-        self.logger.info(f"  Total attributes: {coverage['total_attributes']}")
-        self.logger.success(f"  ✓ Covered: {coverage['covered_count']} ({coverage['coverage_percentage']:.1f}%)")
-        self.logger.warn(f"  ⚠ Uncovered: {coverage['uncovered_count']} ({100-coverage['coverage_percentage']:.1f}%)")
-        
-        if self.json_diff_results:
-            diff_passed = sum(1 for r in self.json_diff_results if r['status'] == 'PASS')
-            diff_failed = len(self.json_diff_results) - diff_passed
-            self.logger.info(f"\nJSON Diff (Java 8 vs Java 21):")
-            self.logger.success(f"  ✓ Passed: {diff_passed}")
-            if diff_failed > 0:
-                self.logger.error(f"  ✗ Failed: {diff_failed}")
-        
-        execution_time = time.time() - self.start_time
-        self.logger.info(f"\nTotal Execution Time: {execution_time:.2f} seconds")
-        self.logger.separator()
+    def success(self, message: str):
+        """Success level - always shows"""
+        self._log('SUCCESS', message, 'GREEN')
     
-    def run(self):
-        """Main execution flow"""
-        # Store logger reference
-        self.logger = logger_module.logger
-        
-        if self.logger is None:
-            print("ERROR: Logger not initialized! Call init_logger() first.")
-            return False
-        
-        self.start_time = time.time()
-        
-        self.logger.header("API MIGRATION TEST UTILITY")
-        self.logger.info(f"Started at {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        
-        # Load configurations
-        if not self.load_configurations():
-            self.logger.error("Failed to load configurations. Exiting.")
-            return False
-        
-        # Initialize components
-        if not self.initialize_components():
-            self.logger.error("Failed to initialize components. Exiting.")
-            return False
-        
-        # Run Phase 1
-        self.logger.separator()
-        self.run_phase_1()
-        
-        # Run Phase 2
-        self.logger.separator()
-        self.run_phase_2()
-        
-        # Generate reports
-        self.logger.separator()
-        self.generate_reports()
-        
-        # Print summary
-        self.logger.separator()
-        self.print_final_summary()
-        
-        # Cleanup
-        if self.mongo_client:
-            self.mongo_client.close()
-        
-        return True
+    def warn(self, message: str):
+        """Warning level - always shows"""
+        self._log('WARN', message, 'YELLOW')
+    
+    def error(self, message: str):
+        """Error level - always shows"""
+        self._log('ERROR', message, 'RED')
+    
+    def header(self, message: str):
+        """Print header"""
+        print(f"\n{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{'='*70}{self.COLORS['RESET']}")
+        print(f"{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{message.center(70)}{self.COLORS['RESET']}")
+        print(f"{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{'='*70}{self.COLORS['RESET']}\n")
+    
+    def separator(self, char: str = '=', length: int = 70):
+        """Print separator line"""
+        print(f"{self.COLORS['BLUE']}{char * length}{self.COLORS['RESET']}")
+
+
+# Initialize logger with default settings immediately
+# This ensures logger is NEVER None when imported
+logger = Logger(debug_mode=False)
+
+
+def init_logger(debug_mode: bool = False) -> Logger:
+    """
+    Initialize or reconfigure global logger
+    
+    Args:
+        debug_mode: If True, enable debug logging
+    
+    Returns:
+        Logger instance
+    """
+    global logger
+    logger = Logger(debug_mode)
+    return logger
 ```
 
 ---
 
-This complete file now properly handles the logger by:
-1. Storing it as `self.logger` in the `run()` method
-2. Using `self.logger` throughout all methods
-3. Checking if it's None before starting
+## What Changed?
 
-Try running again:
+**Before:**
+```python
+logger: Optional[Logger] = None  # Logger is None initially!
+
+def init_logger(debug_mode: bool = False):
+    global logger
+    logger = Logger(debug_mode)  # Only created when called
+    return logger
+```
+
+**After:**
+```python
+logger = Logger(debug_mode=False)  # Created immediately at import!
+
+def init_logger(debug_mode: bool = False) -> Logger:
+    global logger
+    logger = Logger(debug_mode)  # Reconfigures if called
+    return logger
+```
+
+---
+
+## How This Solves Everything
+
+1. **At import time:** All modules import logger, and it's already a valid Logger instance (with debug_mode=False by default)
+2. **No more None errors:** Every module can use logger.debug(), logger.info(), etc. immediately
+3. **Still configurable:** When run_test.py calls `init_logger(debug_mode=True)`, it reconfigures the logger for debug mode
+4. **No changes needed:** All other files work as-is!
+
+---
+
+## Test It
+
+Just update `src/logger.py` with the code above, then run:
 
 ```bash
 python run_test.py --debug
 ```
 
-This should work now! 🚀
+This should work perfectly now! The logger is initialized as soon as the module is imported, so it's never None. 🎉
+
+Let me know how it goes!
