@@ -1,83 +1,72 @@
-Excellent! MongoDB connection is working now. Let's add query logging to debug logs.
+I see the issue! Your MongoDB query logging shows:
 
----
-
-## UPDATE: src/mongo_client.py
-
-Add query logging to both query methods:
-
-### **Update the `find_by_payment_id` method:**
-
-```python
-def find_by_payment_id(self, payment_id: str, payment_id_field: str) -> Dict[str, Any]:
-    """
-    Find document by payment ID
-    
-    Args:
-        payment_id: Payment ID value
-        payment_id_field: MongoDB field name for payment ID (from config)
-    
-    Returns:
-        Dict with 'success' (bool), 'data' (dict or None), 'error' (str or None)
-    """
-    if self.collection is None:
-        return {
-            'success': False,
-            'data': None,
-            'error': 'Not connected to MongoDB'
-        }
-    
-    try:
-        # Build query using config field name
-        query = {payment_id_field: payment_id}
-        
-        # DEBUG: Log the query
-        _log('debug', f"Querying MongoDB:")
-        _log('debug', f"  Collection: {self.collection_name}")
-        _log('debug', f"  Query: {query}")
-        
-        # Execute query
-        document = self.collection.find_one(query)
-        
-        if document:
-            # Convert ObjectId to string if present
-            if '_id' in document:
-                document['_id'] = str(document['_id'])
-            
-            _log('debug', f"  ✓ Result: Found document with {len(document)} fields")
-            
-            return {
-                'success': True,
-                'data': document,
-                'error': None
-            }
-        else:
-            _log('warn', f"  ✗ Result: No document found")
-            return {
-                'success': False,
-                'data': None,
-                'error': f'No document found with {payment_id_field} = {payment_id}'
-            }
-        
-    except OperationFailure as e:
-        _log('error', f"MongoDB query failed: {str(e)}")
-        return {
-            'success': False,
-            'data': None,
-            'error': f'Query failed: {str(e)}'
-        }
-    except Exception as e:
-        _log('error', f"Error querying MongoDB: {str(e)}")
-        return {
-            'success': False,
-            'data': None,
-            'error': f'Error: {str(e)}'
-        }
+```
+Query: {'MIFMP.Bbi': {'$exists': True, '$ne': ''}}
 ```
 
+But in MongoDB Compass, when you manually query:
+```json
+{"MIFMP.Bbi": {"$exists": true, "$ne": ""}}
+```
+
+It finds 179,713 documents!
+
 ---
 
-### **Update the `find_one_with_field` method:**
+## THE PROBLEM
+
+Python's `True` (capital T) is being converted to the boolean `true` in MongoDB queries. The issue is likely that **PyMongo is being too strict** with the query or there's a subtle difference.
+
+Looking more closely at your Compass query vs the code query, I notice in the debug logs:
+
+```
+Query: {'MIFMP.Bbi': {'$exists': True, '$ne': ''}}
+```
+
+But MongoDB needs **lowercase** `true`:
+```
+{'MIFMP.Bbi': {'$exists': true, '$ne': ''}}
+```
+
+Actually, PyMongo should handle this automatically... Let me look at the actual issue.
+
+---
+
+## ACTUAL ISSUE: Projection is Wrong!
+
+Look at the debug log:
+```
+Projection: {'_id': 0}
+```
+
+The query is asking for `_id: 0` (don't return _id) but it's also asking for a field that doesn't exist in the projection!
+
+The query should project the **payment ID field**, but it's only excluding `_id`.
+
+---
+
+## THE BUG in src/mongo_client.py
+
+In the `find_one_with_field` method, look at this line:
+
+```python
+projection = {payment_id_field: 1, '_id': 0}
+```
+
+The debug log shows:
+```
+Projection: {'_id': 0}
+```
+
+This means `payment_id_field` is somehow not being included or is being set incorrectly!
+
+---
+
+## FIX: Debug the payment_id_field value
+
+Add debug logging to see what `payment_id_field` is:
+
+### **Update src/mongo_client.py - find_one_with_field method:**
 
 ```python
 def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optional[str]:
@@ -99,6 +88,12 @@ def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optiona
     try:
         # Clean array notation from field name
         cleaned_field = field_name.replace('[]', '')
+        
+        # DEBUG: Log input parameters
+        _log('debug', f"Input parameters:")
+        _log('debug', f"  field_name: {field_name}")
+        _log('debug', f"  cleaned_field: {cleaned_field}")
+        _log('debug', f"  payment_id_field: {payment_id_field}")
         
         # Build query
         query = {
@@ -122,259 +117,88 @@ def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optiona
         # Execute query with limit 1
         document = self.collection.find_one(query, projection)
         
-        if document and payment_id_field in document:
-            payment_id = document[payment_id_field]
-            _log('debug', f"  ✓ Result: Found payment ID = {payment_id}")
-            return payment_id
+        # DEBUG: Log what was returned
+        _log('debug', f"  MongoDB returned: {document}")
+        
+        if document:
+            _log('debug', f"  Document keys: {list(document.keys())}")
+            
+            if payment_id_field in document:
+                payment_id = document[payment_id_field]
+                _log('debug', f"  ✓ Result: Found payment ID = {payment_id}")
+                return payment_id
+            else:
+                _log('debug', f"  ✗ Result: Document found but payment_id_field '{payment_id_field}' not in document")
+                return None
         else:
             _log('debug', f"  ✗ Result: No document found")
             return None
         
     except Exception as e:
         _log('error', f"Error searching for field {field_name}: {str(e)}")
+        import traceback
+        _log('debug', traceback.format_exc())
         return None
 ```
 
 ---
 
-## WHAT YOU'LL SEE IN DEBUG MODE
+## Also Check: What payment_id_field is being passed
 
-Now when you run with `--debug`, you'll see detailed query logs:
-
-### **Phase 1 Example:**
-```
-[2025-10-10 06:05:30] DEBUG: Querying MongoDB:
-[2025-10-10 06:05:30] DEBUG:   Collection: odsMPYPaymentDetail
-[2025-10-10 06:05:30] DEBUG:   Query: {'mid': '2380924000000930'}
-[2025-10-10 06:05:30] DEBUG:   ✓ Result: Found document with 47 fields
-```
-
-### **Phase 2 Example:**
-```
-[2025-10-10 06:08:15] DEBUG: Searching for document with field: MIFMP.BnfAdr1
-[2025-10-10 06:08:15] DEBUG:   Collection: odsMPYPaymentDetail
-[2025-10-10 06:08:15] DEBUG:   Query: {'MIFMP.BnfAdr1': {'$exists': True, '$ne': None, '$ne': ''}}
-[2025-10-10 06:08:15] DEBUG:   Projection: {'mid': 1, '_id': 0}
-[2025-10-10 06:08:15] DEBUG:   Limit: 1
-[2025-10-10 06:08:15] DEBUG:   ✓ Result: Found payment ID = 2450924000000050A
-```
-
----
-
-## COMPLETE UPDATED src/mongo_client.py
-
-Here's the full file with all changes:
+In `src/main.py`, in the `run_phase_2` method, add debug:
 
 ```python
-"""
-MongoDB Client Module
-Handles MongoDB connection and queries
-"""
-
-from typing import Dict, Any, Optional
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure, OperationFailure
-from . import logger as logger_module
-
-
-def _log(level, message):
-    """Helper to log only if logger is initialized"""
-    if logger_module.logger:
-        getattr(logger_module.logger, level)(message)
-
-
-class MongoDBClient:
-    """MongoDB client for querying payment data"""
+def run_phase_2(self):
+    """Execute Phase 2: Find and test uncovered attributes"""
+    self.logger.header("PHASE 2: Finding Records for Uncovered Attributes")
     
-    def __init__(self, connection_string: str, database: str, collection: str):
-        """
-        Initialize MongoDB client
-        
-        Args:
-            connection_string: MongoDB connection string (with credentials from .env)
-            database: Database name
-            collection: Collection name
-        """
-        self.connection_string = connection_string
-        self.database_name = database
-        self.collection_name = collection
-        self.client: Optional[MongoClient] = None
-        self.db = None
-        self.collection = None
-        
-        _log('debug', f"MongoDB client initialized")
-        _log('debug', f"  Database: {database}")
-        _log('debug', f"  Collection: {collection}")
+    # Get uncovered attributes
+    uncovered_mappings = self.coverage_tracker.get_uncovered_mappings()
     
-    def connect(self) -> bool:
-        """
-        Connect to MongoDB
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
-        try:
-            _log('debug', "Connecting to MongoDB...")
-            
-            self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=5000)
-            
-            # Test connection
-            self.client.admin.command('ping')
-            
-            self.db = self.client[self.database_name]
-            self.collection = self.db[self.collection_name]
-            
-            _log('success', f"✓ Connected to MongoDB - Database: {self.database_name}, Collection: {self.collection_name}")
-            
-            return True
-            
-        except ConnectionFailure as e:
-            _log('error', f"MongoDB connection failed: {str(e)}")
-            return False
-        except Exception as e:
-            _log('error', f"Error connecting to MongoDB: {str(e)}")
-            return False
+    if not uncovered_mappings:
+        self.logger.info("All attributes covered in Phase 1! Phase 2 not needed.")
+        return
     
-    def find_by_payment_id(self, payment_id: str, payment_id_field: str) -> Dict[str, Any]:
-        """
-        Find document by payment ID
-        
-        Args:
-            payment_id: Payment ID value
-            payment_id_field: MongoDB field name for payment ID (from config)
-        
-        Returns:
-            Dict with 'success' (bool), 'data' (dict or None), 'error' (str or None)
-        """
-        if self.collection is None:
-            return {
-                'success': False,
-                'data': None,
-                'error': 'Not connected to MongoDB'
-            }
-        
-        try:
-            # Build query using config field name
-            query = {payment_id_field: payment_id}
-            
-            # DEBUG: Log the query
-            _log('debug', f"Querying MongoDB:")
-            _log('debug', f"  Collection: {self.collection_name}")
-            _log('debug', f"  Query: {query}")
-            
-            # Execute query
-            document = self.collection.find_one(query)
-            
-            if document:
-                # Convert ObjectId to string if present
-                if '_id' in document:
-                    document['_id'] = str(document['_id'])
-                
-                _log('debug', f"  ✓ Result: Found document with {len(document)} fields")
-                
-                return {
-                    'success': True,
-                    'data': document,
-                    'error': None
-                }
-            else:
-                _log('warn', f"  ✗ Result: No document found")
-                return {
-                    'success': False,
-                    'data': None,
-                    'error': f'No document found with {payment_id_field} = {payment_id}'
-                }
-            
-        except OperationFailure as e:
-            _log('error', f"MongoDB query failed: {str(e)}")
-            return {
-                'success': False,
-                'data': None,
-                'error': f'Query failed: {str(e)}'
-            }
-        except Exception as e:
-            _log('error', f"Error querying MongoDB: {str(e)}")
-            return {
-                'success': False,
-                'data': None,
-                'error': f'Error: {str(e)}'
-            }
+    self.logger.info(f"{len(uncovered_mappings)} attributes not yet covered")
+    self.logger.info("Searching for payment IDs with these attributes...\n")
     
-    def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optional[str]:
-        """
-        Find ONE document that has the specified field with non-null value
-        Used in Phase 2 to find payment IDs for uncovered attributes
-        
-        Args:
-            field_name: MongoDB field name to search for
-            payment_id_field: Payment ID field name to extract
-        
-        Returns:
-            Payment ID if found, None otherwise
-        """
-        if self.collection is None:
-            _log('error', "Not connected to MongoDB")
-            return None
-        
-        try:
-            # Clean array notation from field name
-            cleaned_field = field_name.replace('[]', '')
-            
-            # Build query
-            query = {
-                cleaned_field: {
-                    '$exists': True,
-                    '$ne': None,
-                    '$ne': ""
-                }
-            }
-            
-            # Project only payment ID field
-            projection = {payment_id_field: 1, '_id': 0}
-            
-            # DEBUG: Log the query
-            _log('debug', f"Searching for document with field: {cleaned_field}")
-            _log('debug', f"  Collection: {self.collection_name}")
-            _log('debug', f"  Query: {query}")
-            _log('debug', f"  Projection: {projection}")
-            _log('debug', f"  Limit: 1")
-            
-            # Execute query with limit 1
-            document = self.collection.find_one(query, projection)
-            
-            if document and payment_id_field in document:
-                payment_id = document[payment_id_field]
-                _log('debug', f"  ✓ Result: Found payment ID = {payment_id}")
-                return payment_id
-            else:
-                _log('debug', f"  ✗ Result: No document found")
-                return None
-            
-        except Exception as e:
-            _log('error', f"Error searching for field {field_name}: {str(e)}")
-            return None
+    # Find payment IDs for uncovered attributes
+    payment_ids_to_test: Set[str] = set()
+    payment_id_field = self.test_config['paymentIdMapping']['mongoField']
     
-    def close(self):
-        """Close MongoDB connection"""
-        if self.client:
-            self.client.close()
-            _log('debug', "MongoDB connection closed")
+    # DEBUG: Log what payment_id_field we're using
+    self.logger.debug(f"Payment ID field from config: '{payment_id_field}'")
+    
+    self.logger.info("Querying MongoDB for uncovered attributes...")
+    
+    for idx, mapping in enumerate(uncovered_mappings, 1):
+        mongo_field = mapping['mongoField']
+        json_attr = mapping['jsonAttribute']
+        
+        self.logger.debug(f"[{idx}/{len(uncovered_mappings)}] {json_attr}")
+        
+        # Find payment ID with this field
+        payment_id = self.mongo_client.find_one_with_field(mongo_field, payment_id_field)
+        
+        # ... rest of method
 ```
 
 ---
 
-## TEST IT
-
-Run with debug mode:
+## RUN WITH DEBUG
 
 ```bash
 python run_test.py --debug
 ```
 
-You should now see detailed MongoDB query logs showing:
-- Collection name
-- Exact query being executed
-- Projection (if any)
-- Query results
+Look for these lines in the output:
+1. What is `payment_id_field` being set to?
+2. What does `MongoDB returned:` show?
+3. Is the projection correct?
 
-Perfect for debugging! 🔍
+Share the debug output and we'll see exactly what's wrong! 🔍
+
+The query itself is correct (it finds documents in Compass), so the issue is either:
+- Wrong `payment_id_field` value
+- Projection not working correctly
+- Document returned but payment ID extraction failing
