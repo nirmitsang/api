@@ -1,149 +1,380 @@
-
-Yes! There's a much simpler solution - **initialize the logger at module import time** with a default instance, instead of waiting for `init_logger()` to be called.
+Excellent! MongoDB connection is working now. Let's add query logging to debug logs.
 
 ---
 
-## SIMPLE FIX: Update src/logger.py
+## UPDATE: src/mongo_client.py
 
-Replace the entire file with this:
+Add query logging to both query methods:
+
+### **Update the `find_by_payment_id` method:**
 
 ```python
-"""
-Logger Module
-Provides colored console logging with debug levels
-"""
-
-import sys
-from datetime import datetime
-from typing import Optional
-
-
-class Logger:
-    """Simple colored logger with debug levels"""
-    
-    # ANSI color codes
-    COLORS = {
-        'RESET': '\033[0m',
-        'RED': '\033[91m',
-        'GREEN': '\033[92m',
-        'YELLOW': '\033[93m',
-        'BLUE': '\033[94m',
-        'MAGENTA': '\033[95m',
-        'CYAN': '\033[96m',
-        'WHITE': '\033[97m',
-        'BOLD': '\033[1m'
-    }
-    
-    def __init__(self, debug_mode: bool = False):
-        """
-        Initialize logger
-        
-        Args:
-            debug_mode: If True, show DEBUG level logs
-        """
-        self.debug_mode = debug_mode
-    
-    def _log(self, level: str, message: str, color: str):
-        """Internal logging function"""
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        colored_level = f"{self.COLORS[color]}{level}{self.COLORS['RESET']}"
-        print(f"[{timestamp}] {colored_level}: {message}")
-    
-    def debug(self, message: str):
-        """Debug level - only shows if debug_mode is True"""
-        if self.debug_mode:
-            self._log('DEBUG', message, 'CYAN')
-    
-    def info(self, message: str):
-        """Info level - always shows"""
-        self._log('INFO', message, 'WHITE')
-    
-    def success(self, message: str):
-        """Success level - always shows"""
-        self._log('SUCCESS', message, 'GREEN')
-    
-    def warn(self, message: str):
-        """Warning level - always shows"""
-        self._log('WARN', message, 'YELLOW')
-    
-    def error(self, message: str):
-        """Error level - always shows"""
-        self._log('ERROR', message, 'RED')
-    
-    def header(self, message: str):
-        """Print header"""
-        print(f"\n{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{'='*70}{self.COLORS['RESET']}")
-        print(f"{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{message.center(70)}{self.COLORS['RESET']}")
-        print(f"{self.COLORS['BOLD']}{self.COLORS['MAGENTA']}{'='*70}{self.COLORS['RESET']}\n")
-    
-    def separator(self, char: str = '=', length: int = 70):
-        """Print separator line"""
-        print(f"{self.COLORS['BLUE']}{char * length}{self.COLORS['RESET']}")
-
-
-# Initialize logger with default settings immediately
-# This ensures logger is NEVER None when imported
-logger = Logger(debug_mode=False)
-
-
-def init_logger(debug_mode: bool = False) -> Logger:
+def find_by_payment_id(self, payment_id: str, payment_id_field: str) -> Dict[str, Any]:
     """
-    Initialize or reconfigure global logger
+    Find document by payment ID
     
     Args:
-        debug_mode: If True, enable debug logging
+        payment_id: Payment ID value
+        payment_id_field: MongoDB field name for payment ID (from config)
     
     Returns:
-        Logger instance
+        Dict with 'success' (bool), 'data' (dict or None), 'error' (str or None)
     """
-    global logger
-    logger = Logger(debug_mode)
-    return logger
+    if self.collection is None:
+        return {
+            'success': False,
+            'data': None,
+            'error': 'Not connected to MongoDB'
+        }
+    
+    try:
+        # Build query using config field name
+        query = {payment_id_field: payment_id}
+        
+        # DEBUG: Log the query
+        _log('debug', f"Querying MongoDB:")
+        _log('debug', f"  Collection: {self.collection_name}")
+        _log('debug', f"  Query: {query}")
+        
+        # Execute query
+        document = self.collection.find_one(query)
+        
+        if document:
+            # Convert ObjectId to string if present
+            if '_id' in document:
+                document['_id'] = str(document['_id'])
+            
+            _log('debug', f"  ✓ Result: Found document with {len(document)} fields")
+            
+            return {
+                'success': True,
+                'data': document,
+                'error': None
+            }
+        else:
+            _log('warn', f"  ✗ Result: No document found")
+            return {
+                'success': False,
+                'data': None,
+                'error': f'No document found with {payment_id_field} = {payment_id}'
+            }
+        
+    except OperationFailure as e:
+        _log('error', f"MongoDB query failed: {str(e)}")
+        return {
+            'success': False,
+            'data': None,
+            'error': f'Query failed: {str(e)}'
+        }
+    except Exception as e:
+        _log('error', f"Error querying MongoDB: {str(e)}")
+        return {
+            'success': False,
+            'data': None,
+            'error': f'Error: {str(e)}'
+        }
 ```
 
 ---
 
-## What Changed?
+### **Update the `find_one_with_field` method:**
 
-**Before:**
 ```python
-logger: Optional[Logger] = None  # Logger is None initially!
-
-def init_logger(debug_mode: bool = False):
-    global logger
-    logger = Logger(debug_mode)  # Only created when called
-    return logger
+def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optional[str]:
+    """
+    Find ONE document that has the specified field with non-null value
+    Used in Phase 2 to find payment IDs for uncovered attributes
+    
+    Args:
+        field_name: MongoDB field name to search for
+        payment_id_field: Payment ID field name to extract
+    
+    Returns:
+        Payment ID if found, None otherwise
+    """
+    if self.collection is None:
+        _log('error', "Not connected to MongoDB")
+        return None
+    
+    try:
+        # Clean array notation from field name
+        cleaned_field = field_name.replace('[]', '')
+        
+        # Build query
+        query = {
+            cleaned_field: {
+                '$exists': True,
+                '$ne': None,
+                '$ne': ""
+            }
+        }
+        
+        # Project only payment ID field
+        projection = {payment_id_field: 1, '_id': 0}
+        
+        # DEBUG: Log the query
+        _log('debug', f"Searching for document with field: {cleaned_field}")
+        _log('debug', f"  Collection: {self.collection_name}")
+        _log('debug', f"  Query: {query}")
+        _log('debug', f"  Projection: {projection}")
+        _log('debug', f"  Limit: 1")
+        
+        # Execute query with limit 1
+        document = self.collection.find_one(query, projection)
+        
+        if document and payment_id_field in document:
+            payment_id = document[payment_id_field]
+            _log('debug', f"  ✓ Result: Found payment ID = {payment_id}")
+            return payment_id
+        else:
+            _log('debug', f"  ✗ Result: No document found")
+            return None
+        
+    except Exception as e:
+        _log('error', f"Error searching for field {field_name}: {str(e)}")
+        return None
 ```
 
-**After:**
+---
+
+## WHAT YOU'LL SEE IN DEBUG MODE
+
+Now when you run with `--debug`, you'll see detailed query logs:
+
+### **Phase 1 Example:**
+```
+[2025-10-10 06:05:30] DEBUG: Querying MongoDB:
+[2025-10-10 06:05:30] DEBUG:   Collection: odsMPYPaymentDetail
+[2025-10-10 06:05:30] DEBUG:   Query: {'mid': '2380924000000930'}
+[2025-10-10 06:05:30] DEBUG:   ✓ Result: Found document with 47 fields
+```
+
+### **Phase 2 Example:**
+```
+[2025-10-10 06:08:15] DEBUG: Searching for document with field: MIFMP.BnfAdr1
+[2025-10-10 06:08:15] DEBUG:   Collection: odsMPYPaymentDetail
+[2025-10-10 06:08:15] DEBUG:   Query: {'MIFMP.BnfAdr1': {'$exists': True, '$ne': None, '$ne': ''}}
+[2025-10-10 06:08:15] DEBUG:   Projection: {'mid': 1, '_id': 0}
+[2025-10-10 06:08:15] DEBUG:   Limit: 1
+[2025-10-10 06:08:15] DEBUG:   ✓ Result: Found payment ID = 2450924000000050A
+```
+
+---
+
+## COMPLETE UPDATED src/mongo_client.py
+
+Here's the full file with all changes:
+
 ```python
-logger = Logger(debug_mode=False)  # Created immediately at import!
+"""
+MongoDB Client Module
+Handles MongoDB connection and queries
+"""
 
-def init_logger(debug_mode: bool = False) -> Logger:
-    global logger
-    logger = Logger(debug_mode)  # Reconfigures if called
-    return logger
+from typing import Dict, Any, Optional
+from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure, OperationFailure
+from . import logger as logger_module
+
+
+def _log(level, message):
+    """Helper to log only if logger is initialized"""
+    if logger_module.logger:
+        getattr(logger_module.logger, level)(message)
+
+
+class MongoDBClient:
+    """MongoDB client for querying payment data"""
+    
+    def __init__(self, connection_string: str, database: str, collection: str):
+        """
+        Initialize MongoDB client
+        
+        Args:
+            connection_string: MongoDB connection string (with credentials from .env)
+            database: Database name
+            collection: Collection name
+        """
+        self.connection_string = connection_string
+        self.database_name = database
+        self.collection_name = collection
+        self.client: Optional[MongoClient] = None
+        self.db = None
+        self.collection = None
+        
+        _log('debug', f"MongoDB client initialized")
+        _log('debug', f"  Database: {database}")
+        _log('debug', f"  Collection: {collection}")
+    
+    def connect(self) -> bool:
+        """
+        Connect to MongoDB
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        try:
+            _log('debug', "Connecting to MongoDB...")
+            
+            self.client = MongoClient(self.connection_string, serverSelectionTimeoutMS=5000)
+            
+            # Test connection
+            self.client.admin.command('ping')
+            
+            self.db = self.client[self.database_name]
+            self.collection = self.db[self.collection_name]
+            
+            _log('success', f"✓ Connected to MongoDB - Database: {self.database_name}, Collection: {self.collection_name}")
+            
+            return True
+            
+        except ConnectionFailure as e:
+            _log('error', f"MongoDB connection failed: {str(e)}")
+            return False
+        except Exception as e:
+            _log('error', f"Error connecting to MongoDB: {str(e)}")
+            return False
+    
+    def find_by_payment_id(self, payment_id: str, payment_id_field: str) -> Dict[str, Any]:
+        """
+        Find document by payment ID
+        
+        Args:
+            payment_id: Payment ID value
+            payment_id_field: MongoDB field name for payment ID (from config)
+        
+        Returns:
+            Dict with 'success' (bool), 'data' (dict or None), 'error' (str or None)
+        """
+        if self.collection is None:
+            return {
+                'success': False,
+                'data': None,
+                'error': 'Not connected to MongoDB'
+            }
+        
+        try:
+            # Build query using config field name
+            query = {payment_id_field: payment_id}
+            
+            # DEBUG: Log the query
+            _log('debug', f"Querying MongoDB:")
+            _log('debug', f"  Collection: {self.collection_name}")
+            _log('debug', f"  Query: {query}")
+            
+            # Execute query
+            document = self.collection.find_one(query)
+            
+            if document:
+                # Convert ObjectId to string if present
+                if '_id' in document:
+                    document['_id'] = str(document['_id'])
+                
+                _log('debug', f"  ✓ Result: Found document with {len(document)} fields")
+                
+                return {
+                    'success': True,
+                    'data': document,
+                    'error': None
+                }
+            else:
+                _log('warn', f"  ✗ Result: No document found")
+                return {
+                    'success': False,
+                    'data': None,
+                    'error': f'No document found with {payment_id_field} = {payment_id}'
+                }
+            
+        except OperationFailure as e:
+            _log('error', f"MongoDB query failed: {str(e)}")
+            return {
+                'success': False,
+                'data': None,
+                'error': f'Query failed: {str(e)}'
+            }
+        except Exception as e:
+            _log('error', f"Error querying MongoDB: {str(e)}")
+            return {
+                'success': False,
+                'data': None,
+                'error': f'Error: {str(e)}'
+            }
+    
+    def find_one_with_field(self, field_name: str, payment_id_field: str) -> Optional[str]:
+        """
+        Find ONE document that has the specified field with non-null value
+        Used in Phase 2 to find payment IDs for uncovered attributes
+        
+        Args:
+            field_name: MongoDB field name to search for
+            payment_id_field: Payment ID field name to extract
+        
+        Returns:
+            Payment ID if found, None otherwise
+        """
+        if self.collection is None:
+            _log('error', "Not connected to MongoDB")
+            return None
+        
+        try:
+            # Clean array notation from field name
+            cleaned_field = field_name.replace('[]', '')
+            
+            # Build query
+            query = {
+                cleaned_field: {
+                    '$exists': True,
+                    '$ne': None,
+                    '$ne': ""
+                }
+            }
+            
+            # Project only payment ID field
+            projection = {payment_id_field: 1, '_id': 0}
+            
+            # DEBUG: Log the query
+            _log('debug', f"Searching for document with field: {cleaned_field}")
+            _log('debug', f"  Collection: {self.collection_name}")
+            _log('debug', f"  Query: {query}")
+            _log('debug', f"  Projection: {projection}")
+            _log('debug', f"  Limit: 1")
+            
+            # Execute query with limit 1
+            document = self.collection.find_one(query, projection)
+            
+            if document and payment_id_field in document:
+                payment_id = document[payment_id_field]
+                _log('debug', f"  ✓ Result: Found payment ID = {payment_id}")
+                return payment_id
+            else:
+                _log('debug', f"  ✗ Result: No document found")
+                return None
+            
+        except Exception as e:
+            _log('error', f"Error searching for field {field_name}: {str(e)}")
+            return None
+    
+    def close(self):
+        """Close MongoDB connection"""
+        if self.client:
+            self.client.close()
+            _log('debug', "MongoDB connection closed")
 ```
 
 ---
 
-## How This Solves Everything
+## TEST IT
 
-1. **At import time:** All modules import logger, and it's already a valid Logger instance (with debug_mode=False by default)
-2. **No more None errors:** Every module can use logger.debug(), logger.info(), etc. immediately
-3. **Still configurable:** When run_test.py calls `init_logger(debug_mode=True)`, it reconfigures the logger for debug mode
-4. **No changes needed:** All other files work as-is!
-
----
-
-## Test It
-
-Just update `src/logger.py` with the code above, then run:
+Run with debug mode:
 
 ```bash
 python run_test.py --debug
 ```
 
-This should work perfectly now! The logger is initialized as soon as the module is imported, so it's never None. 🎉
+You should now see detailed MongoDB query logs showing:
+- Collection name
+- Exact query being executed
+- Projection (if any)
+- Query results
 
-Let me know how it goes!
+Perfect for debugging! 🔍
